@@ -1,0 +1,94 @@
+[tool.poetry]
+name = "sparkline-rag"
+version = "0.1.0"
+description = "Sparkline In-House LLM + RAG System — fully local, enterprise-grade"
+authors = ["Sparkline Intern Team"]
+readme = "README.md"
+packages = [{include = "sparkline"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+# ── Web framework ──────────────────────────────────────────────────
+fastapi = "^0.111"
+uvicorn = {extras = ["standard"], version = "^0.30"}
+python-multipart = "^0.0.9"
+
+# ── Config ────────────────────────────────────────────────────────
+pydantic-settings = "^2.3"
+pydantic = {extras = ["email"], version = "^2.7"}
+
+# ── Database ──────────────────────────────────────────────────────
+sqlalchemy = {extras = ["asyncio"], version = "^2.0"}
+asyncpg = "^0.29"
+alembic = "^1.13"
+
+# ── Redis ─────────────────────────────────────────────────────────
+redis = {extras = ["asyncio"], version = "^5.0"}
+
+# ── MinIO ─────────────────────────────────────────────────────────
+minio = "^7.2"
+
+# ── Qdrant ────────────────────────────────────────────────────────
+qdrant-client = "^1.9"
+
+# ── Embeddings & ML ───────────────────────────────────────────────
+# torch is installed separately (see setup instructions) so we can pick
+# the right CUDA build when the GPU arrives.
+sentence-transformers = "^3.0"
+
+# ── Keyword search ────────────────────────────────────────────────
+rank-bm25 = "^0.2"
+
+# ── Document parsing ──────────────────────────────────────────────
+pdfplumber = "^0.11"
+pymupdf = "^1.24"
+python-docx = "^1.1"
+openpyxl = "^3.1"
+
+# ── OCR ───────────────────────────────────────────────────────────
+pytesseract = "^0.3"
+pillow = "^10.0"
+
+# ── Charts & Data ─────────────────────────────────────────────────
+matplotlib = "^3.9"
+pandas = "^2.2"
+numpy = "^1.26"
+
+# ── HTTP client ───────────────────────────────────────────────────
+httpx = "^0.27"
+
+# ── Auth ──────────────────────────────────────────────────────────
+python-jose = {extras = ["cryptography"], version = "^3.3"}
+passlib = {extras = ["bcrypt"], version = "^1.7"}
+
+# ── Utilities ─────────────────────────────────────────────────────
+tiktoken = "^0.7"
+tenacity = "^8.3"
+structlog = "^24.2"
+rich = "^13.7"
+typer = "^0.12"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2"
+pytest-asyncio = "^0.23"
+pytest-httpx = "^0.30"
+httpx = "^0.27"
+black = "^24.4"
+ruff = "^0.4"
+mypy = "^1.10"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
