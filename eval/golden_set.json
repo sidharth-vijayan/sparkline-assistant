@@ -1,0 +1,32 @@
+[
+  {
+    "id": "eval_001",
+    "question": "What are the standard safety requirements for operating heavy construction equipment?",
+    "ground_truth": "Heavy construction equipment operation requires proper PPE, certified operator training, daily equipment inspection, and adherence to site safety protocols.",
+    "tags": ["safety", "equipment", "operations"]
+  },
+  {
+    "id": "eval_002",
+    "question": "What is the leave policy for employees?",
+    "ground_truth": "Employees are entitled to annual leave, sick leave, and public holidays as per the HR policy document.",
+    "tags": ["hr", "policy", "leave"]
+  },
+  {
+    "id": "eval_003",
+    "question": "Summarize the Q3 financial performance.",
+    "ground_truth": "The Q3 financial report shows revenue, expenses, and net profit for the third quarter.",
+    "tags": ["finance", "report"]
+  },
+  {
+    "id": "eval_004",
+    "question": "What equipment is listed in the latest BOQ?",
+    "ground_truth": "The Bill of Quantities lists the required equipment, quantities, and unit rates for the project.",
+    "tags": ["equipment", "boq", "project"]
+  },
+  {
+    "id": "eval_005",
+    "question": "Who is responsible for site safety audits?",
+    "ground_truth": "Site safety audits are the responsibility of the designated Safety Officer and project manager.",
+    "tags": ["safety", "audit", "responsibility"]
+  }
+]
