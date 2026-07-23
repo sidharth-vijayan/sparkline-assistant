@@ -1,0 +1,166 @@
+# Sparkline In-House LLM + RAG System
+# All services run locally — no external APIs.
+# GPU support for Ollama is toggled via the `ollama` profile.
+# Usage:
+#   CPU-only:  docker compose up -d
+#   With GPU:  docker compose --profile gpu up -d
+
+services:
+  # ─────────────────────────────────────────────
+  # PostgreSQL — shared metadata, users, audit log
+  # ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: sparkline_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sparkline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sparkline_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-sparkline_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sparkline}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Redis — session state (Document RAG only)
+  # ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: sparkline_redis
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # MinIO — raw file storage with versioning
+  # ─────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: sparkline_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_secret}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # ─────────────────────────────────────────────
+  # Qdrant — vector database (dense + sparse/BM25 native)
+  # ─────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: sparkline_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Ollama — local LLM serving (CPU-only mode)
+  # ─────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sparkline_ollama
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Ollama — GPU-accelerated (profile: gpu)
+  # Enable when RTX 5060 Ti is available:
+  #   docker compose --profile gpu up -d
+  # ─────────────────────────────────────────────
+  ollama_gpu:
+    image: ollama/ollama:latest
+    container_name: sparkline_ollama_gpu
+    profiles: ["gpu"]
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Sparkline FastAPI Gateway
+  # ─────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sparkline_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8000}:8000"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  qdrant_data:
+  ollama_data:
