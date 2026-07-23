@@ -1,0 +1,227 @@
+"""
+ingestion/pipeline.py
+──────────────────────
+Top-level ingestion orchestrator.
+
+Called once per file upload. Executes:
+  1. Parse the raw file bytes (using appropriate parser)
+  2. Run OCR for any pages flagged as scanned
+  3. Chunk all content into TextChunk objects
+  4. Store raw file in MinIO (permanent, non-destructive)
+  5. Record Document + DocumentVersion in PostgreSQL
+  6. Store Chunk records in PostgreSQL
+  7. Generate embeddings via EmbeddingService
+  8. Upsert vectors into Qdrant with full metadata payload
+  9. Update the BM25 index with new chunks
+
+If a document with the same filename already exists, a new version is
+created. The previous version's Qdrant chunks are soft-deactivated
+(they remain in Qdrant but will be filtered out by the PEP via
+version_id metadata filtering). The old MinIO object is NEVER deleted.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import structlog
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from config.settings import get_settings
+from db.models import Chunk, Document, DocumentVersion
+from ingestion.chunker import chunk_docx_blocks, chunk_excel_sheets, chunk_pdf_pages, TextChunk
+from ingestion.parsers.docx_parser import parse_docx
+from ingestion.parsers.excel_parser import parse_excel
+from ingestion.parsers.ocr_parser import ocr_pdf_page
+from ingestion.parsers.pdf_parser import parse_pdf
+from services.minio_service import upload_document
+
+logger = structlog.get_logger(__name__)
+settings = get_settings()
+
+
+class IngestionPipeline:
+    """
+    Orchestrates end-to-end document ingestion.
+
+    Embedding and Qdrant upsert are deferred to after this class runs,
+    so the pipeline can be tested independently of the embedding service.
+    Use run_full_ingestion() for the all-in-one path.
+    """
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def ingest(
+        self,
+        file_bytes: bytes,
+        original_filename: str,
+        uploader_id: uuid.UUID,
+        allowed_departments: Optional[list[str]] = None,
+        allowed_designations: Optional[list[str]] = None,
+        is_public: bool = False,
+    ) -> tuple[Document, DocumentVersion, list[TextChunk]]:
+        """
+        Parse, chunk, store metadata for a newly uploaded document.
+
+        Returns the Document, DocumentVersion, and list of TextChunks
+        (the caller is responsible for embedding + Qdrant upsert).
+        """
+        suffix = Path(original_filename).suffix.lower()
+        log = logger.bind(filename=original_filename, uploader=str(uploader_id))
+
+        # ── Step 1: Parse ─────────────────────────────────────────
+        log.info("ingestion.parse.start")
+        chunks: list[TextChunk] = await self._parse_and_chunk(
+            file_bytes, original_filename, suffix
+        )
+        log.info("ingestion.parse.done", chunk_count=len(chunks))
+
+        if not chunks:
+            raise ValueError(f"No content could be extracted from '{original_filename}'")
+
+        # ── Step 2: MinIO upload ───────────────────────────────────
+        doc_id = uuid.uuid4()
+        version_id = uuid.uuid4()
+        mime_type = _mime_for_suffix(suffix)
+
+        minio_key = upload_document(
+            file_data=file_bytes,
+            document_id=doc_id,
+            version_id=version_id,
+            original_filename=original_filename,
+            content_type=mime_type,
+        )
+        log.info("ingestion.minio.uploaded", object_key=minio_key)
+
+        # ── Step 3: Check for existing document (same filename) ────
+        existing_doc = await self._find_existing_document(original_filename)
+
+        if existing_doc:
+            doc = existing_doc
+            # Deactivate the previous active version in Postgres
+            await self.db.execute(
+                update(DocumentVersion)
+                .where(
+                    DocumentVersion.document_id == doc.id,
+                    DocumentVersion.is_active == True,  # noqa: E712
+                )
+                .values(is_active=False)
+            )
+            # Calculate next version number
+            result = await self.db.execute(
+                select(DocumentVersion)
+                .where(DocumentVersion.document_id == doc.id)
+                .order_by(DocumentVersion.version_number.desc())
+                .limit(1)
+            )
+            last_version = result.scalar_one_or_none()
+            next_version_num = (last_version.version_number + 1) if last_version else 1
+            log.info("ingestion.new_version", version_number=next_version_num)
+        else:
+            # Brand new document
+            doc = Document(
+                id=doc_id,
+                filename=original_filename,
+                original_filename=original_filename,
+                allowed_departments=allowed_departments,
+                allowed_designations=allowed_designations,
+                is_public=is_public,
+            )
+            self.db.add(doc)
+            next_version_num = 1
+            log.info("ingestion.new_document")
+
+        # ── Step 4: Create DocumentVersion ─────────────────────────
+        version = DocumentVersion(
+            id=version_id,
+            document_id=doc.id,
+            version_number=next_version_num,
+            minio_object_key=minio_key,
+            file_size_bytes=len(file_bytes),
+            mime_type=mime_type,
+            uploaded_by=uploader_id,
+            uploaded_at=datetime.now(timezone.utc),
+            is_active=True,
+        )
+        self.db.add(version)
+
+        # Update document's current_version pointer
+        doc.current_version_id = version_id
+        doc.allowed_departments = allowed_departments
+        doc.allowed_designations = allowed_designations
+        doc.is_public = is_public
+
+        # ── Step 5: Store Chunk records in Postgres ────────────────
+        db_chunks: list[Chunk] = []
+        for tc in chunks:
+            chunk_record = Chunk(
+                id=uuid.uuid4(),
+                document_version_id=version_id,
+                qdrant_point_id=uuid.uuid4(),
+                chunk_index=tc.chunk_index,
+                page_number=tc.page_number,
+                text=tc.text,
+                token_count=tc.token_count,
+            )
+            db_chunks.append(chunk_record)
+            self.db.add(chunk_record)
+
+        await self.db.flush()
+
+        # Attach Qdrant point IDs back to TextChunks for the embedder
+        for tc, db_chunk in zip(chunks, db_chunks):
+            tc.__dict__["qdrant_point_id"] = db_chunk.qdrant_point_id
+
+        log.info("ingestion.db.flushed", chunk_count=len(db_chunks))
+        return doc, version, chunks
+
+    async def _parse_and_chunk(
+        self, file_bytes: bytes, filename: str, suffix: str
+    ) -> list[TextChunk]:
+        """Dispatch to the appropriate parser + chunker based on file type."""
+        if suffix == ".pdf":
+            pages = parse_pdf(file_bytes, filename)
+            # Run OCR for any pages that need it
+            for page in pages:
+                if page.extraction_method == "ocr_needed":
+                    ocr_result = ocr_pdf_page(file_bytes, page.page_number - 1)
+                    page.text = ocr_result.text
+                    page.extraction_method = "ocr"
+            return chunk_pdf_pages(pages)
+
+        elif suffix in (".doc", ".docx"):
+            blocks = parse_docx(file_bytes, filename)
+            return chunk_docx_blocks(blocks)
+
+        elif suffix in (".xls", ".xlsx"):
+            sheets = parse_excel(file_bytes, filename)
+            return chunk_excel_sheets(sheets)
+
+        else:
+            raise ValueError(
+                f"Unsupported file type: '{suffix}'. "
+                "Supported: .pdf, .docx, .doc, .xlsx, .xls"
+            )
+
+    async def _find_existing_document(self, filename: str) -> Optional[Document]:
+        """Look up an existing document by original filename."""
+        result = await self.db.execute(
+            select(Document).where(Document.original_filename == filename).limit(1)
+        )
+        return result.scalar_one_or_none()
+
+
+def _mime_for_suffix(suffix: str) -> str:
+    _map = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".doc": "application/msword",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xls": "application/vnd.ms-excel",
+    }
+    return _map.get(suffix, "application/octet-stream")
