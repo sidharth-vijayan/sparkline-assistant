@@ -41,7 +41,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    print("✅ Tables created.")
+    print("[OK] Tables created.")
 
     # Seed pilot users
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -77,7 +77,7 @@ async def init_db() -> None:
         session.add(admin)
 
         await session.commit()
-        print(f"✅ Seeded {len(PILOT_USERS)} pilot users + 1 file admin.")
+        print(f"[OK] Seeded {len(PILOT_USERS)} pilot users + 1 file admin.")
 
     await engine.dispose()
 
