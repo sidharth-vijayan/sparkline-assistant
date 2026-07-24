@@ -24,9 +24,9 @@ import structlog
 log = structlog.get_logger()
 
 
-def ok(msg): print(f"  \033[92m✅ {msg}\033[0m")
-def fail(msg): print(f"  \033[91m❌ {msg}\033[0m"); return False
-def section(msg): print(f"\n\033[94m{'─'*50}\n  {msg}\n{'─'*50}\033[0m")
+def ok(msg): print(f"  \033[92m[OK] {msg}\033[0m")
+def fail(msg): print(f"  \033[91m[FAIL] {msg}\033[0m"); return False
+def section(msg): print(f"\n\033[94m{'-'*50}\n  {msg}\n{'-'*50}\033[0m")
 
 
 async def check_postgres():
@@ -95,7 +95,8 @@ def check_qdrant():
         ensure_collection_exists()
         client = _get_client()
         info = client.get_collection(s.qdrant_collection_name)
-        ok(f"Collection '{s.qdrant_collection_name}' ready. Vectors: {info.vectors_count or 0}")
+        vectors_count = getattr(info, "vectors_count", None) or getattr(info, "indexed_vectors_count", 0)
+        ok(f"Collection '{s.qdrant_collection_name}' ready. Vectors: {vectors_count}")
         return True
     except Exception as e:
         return fail(f"Qdrant failed: {e}")
@@ -148,7 +149,7 @@ def check_pilot_user_login():
 
 
 async def main():
-    print("\n\033[1m🔍 Sparkline System Smoke Test\033[0m")
+    print("\n\033[1m[TEST] Sparkline System Smoke Test\033[0m")
     results = []
 
     # Infrastructure (direct connections — no API needed)
@@ -164,13 +165,13 @@ async def main():
 
     passed = sum(1 for r in results if r)
     total = len(results)
-    print(f"\n\033[1m{'─'*50}\nResult: {passed}/{total} checks passed\033[0m")
+    print(f"\n\033[1m{'-'*50}\nResult: {passed}/{total} checks passed\033[0m")
 
     if passed == total:
-        print("\033[92m🎉 All systems go! Ready for document ingestion.\033[0m\n")
+        print("\033[92m[SUCCESS] All systems go! Ready for document ingestion.\033[0m\n")
         sys.exit(0)
     else:
-        print(f"\033[91m⚠️  {total - passed} check(s) failed. Fix them before proceeding.\033[0m\n")
+        print(f"\033[91m[WARNING] {total - passed} check(s) failed. Fix them before proceeding.\033[0m\n")
         sys.exit(1)
 
 
