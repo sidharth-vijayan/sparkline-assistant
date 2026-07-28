@@ -130,7 +130,7 @@ class Document(Base):
         order_by="DocumentVersion.version_number",
     )
     current_version: Mapped[Optional["DocumentVersion"]] = relationship(
-        foreign_keys=[current_version_id], lazy="select"
+        foreign_keys=[current_version_id], lazy="select", post_update=True
     )
 
 
