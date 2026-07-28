@@ -22,7 +22,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sparkline}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sparkline} -d ${POSTGRES_DB:-sparkline_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -83,7 +83,7 @@ services:
       QDRANT__SERVICE__HTTP_PORT: 6333
       QDRANT__SERVICE__GRPC_PORT: 6334
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/readyz"]
+      test: ["CMD-SHELL", "bash -c '(echo >/dev/tcp/localhost/6333) 2>/dev/null && exit 0 || exit 1'"]
       interval: 15s
       timeout: 10s
       retries: 5
