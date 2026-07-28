@@ -63,6 +63,7 @@ def upload_document(
     public: bool = typer.Option(
         False,
         "--public", "-p",
+        is_flag=True,
         help="Make the document accessible to all users",
     ),
 ) -> None:
@@ -79,7 +80,7 @@ def upload_document(
     with open(file_path, "rb") as f:
         file_bytes = f.read()
 
-    data = {"is_public": str(public).lower()}
+    data = {"is_public": "true" if public else "false"}
     if departments:
         data["allowed_departments"] = departments
     if designations:
