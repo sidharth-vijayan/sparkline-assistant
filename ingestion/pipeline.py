@@ -133,6 +133,7 @@ class IngestionPipeline:
                 is_public=is_public,
             )
             self.db.add(doc)
+            await self.db.flush()  # Insert document with current_version_id = None
             next_version_num = 1
             log.info("ingestion.new_document")
 
@@ -149,12 +150,14 @@ class IngestionPipeline:
             is_active=True,
         )
         self.db.add(version)
+        await self.db.flush()  # Insert version pointing to document
 
         # Update document's current_version pointer
-        doc.current_version_id = version_id
+        doc.current_version_id = version.id
         doc.allowed_departments = allowed_departments
         doc.allowed_designations = allowed_designations
         doc.is_public = is_public
+        await self.db.flush()  # Update document with current_version_id
 
         # ── Step 5: Store Chunk records in Postgres ────────────────
         db_chunks: list[Chunk] = []
