@@ -206,9 +206,9 @@ def search_dense(
     client = _get_client()
     collection_name = settings.qdrant_collection_name
 
-    results = client.search(
+    response = client.query_points(
         collection_name=collection_name,
-        query_vector=query_vector,
+        query=query_vector,
         query_filter=qdrant_filter,
         limit=top_k,
         with_payload=True,
@@ -221,5 +221,5 @@ def search_dense(
             "score": r.score,
             "payload": r.payload,
         }
-        for r in results
+        for r in response.points
     ]
