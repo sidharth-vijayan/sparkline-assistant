@@ -100,7 +100,7 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "bash -c '(echo >/dev/tcp/localhost/11434) 2>/dev/null && exit 0 || exit 1'"]
       interval: 30s
       timeout: 20s
       retries: 5
@@ -127,7 +127,7 @@ services:
               count: all
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "bash -c '(echo >/dev/tcp/localhost/11434) 2>/dev/null && exit 0 || exit 1'"]
       interval: 30s
       timeout: 20s
       retries: 5
@@ -158,9 +158,32 @@ services:
       - .:/app
     command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # ─────────────────────────────────────────────
+  # Open WebUI — Chat Frontend
+  # ─────────────────────────────────────────────
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: sparkline_webui
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    ports:
+      - "${WEBUI_PORT:-3000}:8080"
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_AUTH: "true"
+      SPARKLINE_API_URL: http://host.docker.internal:8000
+      ENABLE_SIGNUP: "true"
+    volumes:
+      - open_webui_data:/app/backend/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   postgres_data:
   redis_data:
   minio_data:
   qdrant_data:
   ollama_data:
+  open_webui_data:
