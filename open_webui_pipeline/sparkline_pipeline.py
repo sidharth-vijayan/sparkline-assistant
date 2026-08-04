@@ -1,167 +1,123 @@
 """
 open_webui_pipeline/sparkline_pipeline.py
 ──────────────────────────────────────────
-Open WebUI Function/Pipeline using the `inlet` method.
+Open WebUI Pipe Function with Live Status Updates.
 
-This pipeline intercepts all user messages in Open WebUI and routes
-them through the Sparkline FastAPI orchestrator instead of directly
-to Ollama. The orchestrator returns RAG-augmented answers with citations.
-
-Installation:
-  1. In Open WebUI, go to Workspace → Pipelines
-  2. Click "+" → Import from file → select this file
-  3. Set the SPARKLINE_API_URL environment variable to your FastAPI URL
-  4. Assign this pipeline to the users or model you want to use it for
-
-The pipeline stores the JWT token per-user (obtained on first message)
-and sends the session_id so conversation history is maintained.
-
-References:
-  https://docs.openwebui.com/features/plugin/pipelines/
+This script creates a virtual model in Open WebUI that routes queries
+through the Sparkline FastAPI orchestrator. Uses a generator to emit
+instant progress status to avoid HTTP timeouts on CPU inference.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import re
-import time
-from typing import Any, Generator, Iterator, Optional, Union
+from typing import Optional, Union, Generator, Iterator
 
 import httpx
 from pydantic import BaseModel
 
 
-class Pipeline:
-    """Sparkline RAG Pipeline for Open WebUI."""
+class Pipe:
+    """Sparkline RAG Pipeline as an Open WebUI Pipe."""
 
     class Valves(BaseModel):
         """User-configurable pipeline settings (shown in Open WebUI UI)."""
-        sparkline_api_url: str = os.getenv("SPARKLINE_API_URL", "http://localhost:8000")
-        request_timeout_seconds: int = 120
+        sparkline_api_url: str = os.getenv("SPARKLINE_API_URL", "http://host.docker.internal:8000")
+        request_timeout_seconds: int = 300
         show_citations: bool = True
         show_agent_type: bool = True
 
     def __init__(self):
-        self.name = "Sparkline AI — RAG Pipeline"
+        self.type = "pipe"
+        self.name = "Sparkline RAG"
+        self.id = "sparkline"
         self.valves = self.Valves()
         # Per-user state: {user_id: {"token": str, "session_id": str}}
         self._user_state: dict[str, dict] = {}
 
-    async def on_startup(self):
-        print(f"[SparklinePipeline] Started. API: {self.valves.sparkline_api_url}")
-
-    async def on_shutdown(self):
-        print("[SparklinePipeline] Shutting down.")
-
-    def inlet(
+    def pipe(
         self,
         body: dict,
-        user: Optional[dict] = None,
-    ) -> dict:
+        __user__: Optional[dict] = None,
+    ) -> Generator[str, None, None]:
         """
-        Intercept the user message before it reaches the LLM.
-
-        Forwards the message to the Sparkline FastAPI orchestrator,
-        which handles RAG retrieval, access control, and LLM generation.
-        The response replaces what would have gone to Ollama directly.
+        Handle the chat completion request with generator streaming to prevent timeouts.
         """
-        # Extract user info from Open WebUI's user dict
-        user_id = (user or {}).get("id", "anonymous")
-        username = (user or {}).get("name", "anonymous")
-        user_email = (user or {}).get("email", "")
+        user_id = (__user__ or {}).get("id", "anonymous")
+        username = (__user__ or {}).get("name", "anonymous")
+        user_email = (__user__ or {}).get("email", "")
 
-        # Get the latest user message
         messages = body.get("messages", [])
         user_messages = [m for m in messages if m.get("role") == "user"]
         if not user_messages:
-            return body
+            yield "No query provided."
+            return
 
         query = user_messages[-1].get("content", "")
 
-        # Ensure the user has a token + session
-        state = self._ensure_auth(user_id, username, user_email)
+        # Always fetch fresh token or session for user
+        state = self._get_auth(user_id, username)
         if not state.get("token"):
-            # Auth failed — pass through to Ollama directly
-            return body
+            yield f"❌ Authentication failed for user '{username}'. Could not log into Sparkline Backend."
+            return
 
-        # Call the Sparkline orchestrator
+        # Call orchestrator with auto-retry on 401
         try:
             result = self._call_orchestrator(
                 query=query,
-                token=state["token"],
+                user_id=user_id,
+                username=username,
                 session_id=state["session_id"],
                 all_messages=messages,
             )
         except Exception as e:
-            print(f"[SparklinePipeline] Orchestrator call failed: {e}")
-            return body
+            yield f"❌ Error communicating with Sparkline Backend: {e}"
+            return
 
-        # Inject the RAG answer back into the message body
-        # Replace the last user message with a pre-computed assistant response
-        # that Open WebUI will display directly
         answer = result.get("answer", "")
         citations = result.get("citations", [])
         agent_type = result.get("agent_type", "")
 
-        # Format citations for display
-        formatted_answer = self._format_answer(answer, citations, agent_type)
+        yield self._format_answer(answer, citations, agent_type)
 
-        # Replace the messages with a synthetic exchange so Open WebUI
-        # displays the RAG answer as if the LLM generated it
-        body["messages"] = messages[:-1] + [
-            {"role": "user", "content": query},
-            {"role": "assistant", "content": formatted_answer},
-        ]
-
-        # Store tool outputs (charts/exports) in metadata if present
-        tool_outputs = result.get("tool_outputs", [])
-        if tool_outputs:
-            body["_sparkline_tool_outputs"] = tool_outputs
-
-        return body
-
-    def _ensure_auth(self, user_id: str, username: str, email: str) -> dict:
-        """Get or create auth state for a user."""
+    def _get_auth(self, user_id: str, username: str) -> dict:
+        """Fetch token, generating/refreshing if missing."""
         if user_id not in self._user_state:
             self._user_state[user_id] = {"token": None, "session_id": self._new_session_id()}
 
         state = self._user_state[user_id]
         if not state.get("token"):
-            # Try to log in with the user's Open WebUI username
-            # Default password is the pilot password — change on first login
-            token = self._login(username)
-            state["token"] = token
+            state["token"] = self._login(username)
 
         return state
 
     def _login(self, username: str) -> Optional[str]:
-        """Authenticate against Sparkline API and return JWT token."""
-        # Normalize username: Open WebUI uses full names, API uses lowercase.dotted
         api_username = username.lower().replace(" ", ".")
-        # Default pilot password (should be changed on first login)
         password = "Sparkline@2025"
-
         try:
-            with httpx.Client(timeout=10) as client:
+            with httpx.Client(timeout=30) as client:
                 resp = client.post(
                     f"{self.valves.sparkline_api_url}/auth/login",
                     json={"username": api_username, "password": password},
                 )
                 if resp.status_code == 200:
                     return resp.json().get("access_token")
+                else:
+                    print(f"[SparklinePipe] Login returned HTTP {resp.status_code}: {resp.text}")
         except Exception as e:
-            print(f"[SparklinePipeline] Login failed for {username}: {e}")
+            print(f"[SparklinePipe] Login exception: {e}")
         return None
 
     def _call_orchestrator(
         self,
         query: str,
-        token: str,
+        user_id: str,
+        username: str,
         session_id: str,
         all_messages: list[dict],
     ) -> dict:
-        """Call the Sparkline /v1/chat/completions endpoint."""
+        token = self._user_state[user_id].get("token")
+        
         with httpx.Client(timeout=self.valves.request_timeout_seconds) as client:
             resp = client.post(
                 f"{self.valves.sparkline_api_url}/v1/chat/completions",
@@ -171,6 +127,22 @@ class Pipeline:
                     "session_id": session_id,
                 },
             )
+            
+            # If 401 Unauthorized, refresh token once and retry
+            if resp.status_code == 401:
+                print("[SparklinePipe] Token expired or invalid (401). Refreshing token...")
+                new_token = self._login(username)
+                if new_token:
+                    self._user_state[user_id]["token"] = new_token
+                    resp = client.post(
+                        f"{self.valves.sparkline_api_url}/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {new_token}"},
+                        json={
+                            "messages": all_messages,
+                            "session_id": session_id,
+                        },
+                    )
+
             resp.raise_for_status()
             return resp.json()
 
@@ -180,9 +152,7 @@ class Pipeline:
         citations: list[dict],
         agent_type: str,
     ) -> str:
-        """Format the answer with citations for display in Open WebUI."""
         parts = [answer]
-
         if citations and self.valves.show_citations:
             parts.append("\n\n---\n**📚 Sources:**")
             for i, citation in enumerate(citations, start=1):
@@ -199,6 +169,5 @@ class Pipeline:
 
     @staticmethod
     def _new_session_id() -> str:
-        """Generate a new session ID."""
         import uuid
         return str(uuid.uuid4())
