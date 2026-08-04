@@ -20,6 +20,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 PILOT_USERS = [
     {"username": "siddharth.doshi", "full_name": "Siddharth Doshi", "email": "siddharth.doshi@sparkline.in"},
+    {"username": "sidharth.vijayan", "full_name": "Sidharth Vijayan", "email": "sidharth.vijayan@sparkline.in"},
     {"username": "shruti.doshi", "full_name": "Shruti Doshi", "email": "shruti.doshi@sparkline.in"},
     {"username": "sandeep.pansare", "full_name": "Sandeep Pansare", "email": "sandeep.pansare@sparkline.in"},
     {"username": "ajit.mahabare", "full_name": "Ajit Mahabare", "email": "ajit.mahabare@sparkline.in"},
