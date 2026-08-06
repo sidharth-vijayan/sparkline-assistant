@@ -1,0 +1,22 @@
+# GPU override for the Linux server (NVIDIA, 16GB VRAM).
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Why an override instead of the `gpu` profile: the `ollama_gpu` service binds
+# the same host port as `ollama`, and `ollama` has no profile so it always
+# starts — `--profile gpu up` starts both and the second fails to bind 11434.
+# Keeping the service named `ollama` also leaves LLM_BASE_URL and open-webui's
+# `depends_on: ollama` working unchanged.
+#
+# Only the LLM gets the GPU. Embeddings/reranker stay on CPU: the 20B Q4_K_M
+# model needs ~12GB of the 16GB, and sharing VRAM risks an OOM mid-demo.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

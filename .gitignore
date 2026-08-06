@@ -111,3 +111,6 @@ env/
 # Generated runtime index data
 data/
 
+# Documents for local/demo ingestion — never commit real company files
+demo_docs/
+

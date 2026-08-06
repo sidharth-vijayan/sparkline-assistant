@@ -154,6 +154,12 @@ services:
       - "${API_PORT:-8000}:8000"
     env_file:
       - .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      MINIO_ENDPOINT: minio:9000
+      QDRANT_HOST: qdrant
+      LLM_BASE_URL: http://ollama:11434/v1
     volumes:
       - .:/app
     command: uvicorn gateway.main:app --host 0.0.0.0 --port 8000 --reload
