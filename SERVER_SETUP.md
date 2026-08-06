@@ -196,6 +196,58 @@ curl -s http://localhost:18000/openapi.json | head -c 200
 - API docs → `http://<server-ip>:18000/docs`
 - Open WebUI → `http://<server-ip>:13000`
 
+## Shipping code changes to the server
+
+Development happens on a separate machine; the server only ever pulls. There is
+no file copying, and nothing is edited directly on the server.
+
+```
+edit + commit + push (dev machine)  ->  git pull (server)  ->  maybe rebuild
+```
+
+**Most changes need no rebuild.** The `api` service bind-mounts the repo
+(`.:/app`) and runs uvicorn with `--reload`, so the container executes the
+working tree directly. A `git pull` is picked up in seconds:
+
+```bash
+cd ~/proj1/sparkline-assistant
+git pull origin main
+$C logs api --tail 20        # WatchFiles logs the reload
+```
+
+If the reloader misses it (renamed or deleted modules sometimes confuse it):
+
+```bash
+$C restart api
+```
+
+**Rebuild only when the image itself changed** — that means `pyproject.toml`,
+`poetry.lock`, or the `Dockerfile`. Adding a dependency is the usual trigger:
+
+```bash
+git pull origin main
+$C build api && $C up -d api
+```
+
+**Changing `.env` always needs a recreate**, not a restart — env vars are fixed
+at container creation:
+
+```bash
+$C up -d api
+```
+
+Note that `.env` is gitignored and therefore never arrives via `git pull`. If a
+new setting is added on the dev machine, it must be added to the server's `.env`
+by hand or the app falls back to the default in `config/settings.py` — which is
+usually `localhost` and will fail confusingly inside a container.
+
+Local commits on the server will make later pulls conflict. If a fix was made
+directly on the box, push it from there or discard it:
+
+```bash
+git status                   # expect: clean, except .env and demo_docs/
+```
+
 ## Ingest documents
 
 Without documents the RAG side has nothing to retrieve and every answer is
