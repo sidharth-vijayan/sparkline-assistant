@@ -114,3 +114,6 @@ data/
 # Documents for local/demo ingestion — never commit real company files
 demo_docs/
 
+
+# Runtime logs
+logs/

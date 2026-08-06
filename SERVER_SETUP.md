@@ -4,6 +4,19 @@ Notes from bringing this up on `SEPL-PC` (Ubuntu 24.04, RTX 5060 Ti 16 GB).
 Read the gotchas before running anything — several are non-obvious and fail
 silently rather than loudly.
 
+## Workspace: stay inside the project directory
+
+The machine is shared with another developer, and `$HOME` is common ground. Keep
+everything — logs, scratch files, downloaded documents — inside:
+
+```
+~/proj1/sparkline-assistant
+```
+
+Do not write to `~` directly. Logs belong in `logs/` inside the project (that
+path is gitignored). Two stray files were left in the home root during the
+initial bring-up, `~/model_pull.log` and `~/build.log`; delete or move them.
+
 ## The server is shared
 
 Other people's stacks run on this box and have been up for days. **Do not**
@@ -43,9 +56,15 @@ intentional. Do not "correct" it.**
 ## Gotcha 2: use the native Ollama, not the containerised one
 
 Ollama 0.18.2 is already installed on the host, already listening on 11434 on
-all interfaces, already has direct GPU access, and holds the downloaded model
-in `~/.ollama`. The containerised `ollama` service uses a separate Docker
-volume, so running it would mean re-downloading 15 GB for nothing.
+all interfaces, and already has direct GPU access. It runs as the system user
+`ollama`, so its model store is `/usr/share/ollama/.ollama/models` — **not**
+`~/.ollama`, which does not exist for `sepl`. The containerised `ollama` service
+uses a separate Docker volume, so running it would mean re-downloading 15 GB for
+nothing.
+
+That store already holds `qwen2.5-coder:14b` (9 GB) plus roughly 7 GB of a
+partially downloaded `GPT-OSS-20B` blob from an interrupted pull. Re-running
+`ollama pull` resumes from that partial data rather than starting over.
 
 The override points `api` and `open-webui` at the host via
 `host.docker.internal` + `host-gateway`. `OLLAMA_PORT=21434` in `.env` only
@@ -270,8 +289,8 @@ it looks like retrieval is broken.
 dropped session, and note the progress bar writes `\r`:
 
 ```bash
-nohup ollama pull hf.co/mradermacher/GPT-OSS-20B-i1-GGUF:Q4_K_M > ~/model_pull.log 2>&1 &
-tail -c 300 ~/model_pull.log | tr '\r' '\n' | tail -3
+nohup ollama pull hf.co/mradermacher/GPT-OSS-20B-i1-GGUF:Q4_K_M > logs/model_pull.log 2>&1 &
+tail -c 300 logs/model_pull.log | tr '\r' '\n' | tail -3
 ```
 
 Third-party HuggingFace GGUF pulls can fail on tag or filename mismatches, so
