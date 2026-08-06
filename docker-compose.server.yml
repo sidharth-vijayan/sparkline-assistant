@@ -1,0 +1,28 @@
+# Server-specific override (shared GPU box, other tenants present).
+#   docker compose -f docker-compose.yml -f docker-compose.server.yml up -d
+#
+# Two things this fixes:
+#  1. .env sets host port mappings in a 1xxxx block to dodge other tenants,
+#     but the app builds its connection URLs from those same vars. Pin the
+#     in-network ports back to the real container ports here.
+#  2. Ollama runs natively on the host (already GPU-attached, already holds the
+#     downloaded model), so point at it via host-gateway rather than the
+#     containerised ollama.
+services:
+  api:
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MINIO_ENDPOINT: minio:9000
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6333
+      QDRANT_GRPC_PORT: 6334
+      LLM_BASE_URL: http://host.docker.internal:11434/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  open-webui:
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      SPARKLINE_API_URL: http://api:8000
