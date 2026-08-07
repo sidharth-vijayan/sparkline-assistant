@@ -45,7 +45,8 @@
 - [x] Unit test coverage: **10/10 tests passing** (as of 2026-07-30)
 - [ ] Integration test count (add as you write more)
 - [ ] Uptime / availability target (SLA if defined)
-- [x] Production bugs found & fixed during first live deployment: **2** — (1) a document-visibility access-control bug where a document ingested as "public" was silently invisible to 100% of pilot users; (2) a background-task DB-session lifecycle bug that silently broke the keyword-search (BM25) index after every single document ingestion (2026-08-07)
+- [x] Production bugs found & fixed during first live deployment: **4** — (1) a document-visibility access-control bug where a document ingested as "public" was silently invisible to 100% of pilot users; (2) a background-task DB-session lifecycle bug that silently broke the keyword-search (BM25) index after every single document ingestion; (3) a missing Open WebUI Pipe Function on the new server, which would have bypassed access control and retrieval entirely and served ungrounded LLM answers; (4) a response-parsing bug that rendered every browser answer as a sources list with no answer text (2026-08-07)
+- [x] Deployment-blocking issues caught by validating the frontend path separately from the API path: **2 of the 4** — both were invisible at the API level and would only have surfaced live in front of stakeholders
 - [x] LLM backends evaluated under real GPU constraints before production selection: **2** (GPT-OSS 20B, qwen2.5-coder:14b) — rejected the larger model after it returned empty responses despite fitting fully in GPU memory
 
 ### Collaboration & Integration
@@ -90,11 +91,15 @@ These are templates — update the `X` values as you measure them:
   selecting a production backend based on empirical correctness and latency 
   testing rather than spec-sheet capacity alone.
 
-• Found and fixed 2 production bugs during first live-data validation — a 
-  document-visibility access-control bug that silently hid ingested documents 
-  from 100% of pilot users, and a background-task database-session bug that 
-  broke the keyword-search index on every ingestion — both caught and resolved 
-  before the pipeline reached stakeholders.
+• Found and fixed 4 production bugs during first live-data validation — including 
+  a document-visibility access-control bug that silently hid ingested documents 
+  from 100% of pilot users, and a misconfigured frontend integration that would 
+  have bypassed access control and retrieval entirely to serve ungrounded LLM 
+  answers — all caught and resolved before the pipeline reached stakeholders.
+
+• Caught 2 demo-blocking defects that were invisible at the API layer by 
+  validating the browser-facing chat path independently rather than assuming 
+  API-level test coverage implied a working user experience.
 
 • Achieved ~1.4-second average end-to-end RAG query latency (auth, hybrid 
   retrieval, reranking, LLM generation, and citation assembly) on real ingested 
@@ -112,7 +117,8 @@ These are templates — update the `X` values as you measure them:
 | 2026-08-07 | GPU (RTX 5060 Ti) arrives; full stack deployed to production shared server | First deployment on shared infra; all 7 containers healthy |
 | 2026-08-07 | LLM backend selected under real GPU constraints | Evaluated GPT-OSS 20B vs. qwen2.5-coder:14b; picked the latter after the former returned empty responses despite fitting on GPU |
 | 2026-08-07 | First real document ingestion + end-to-end RAG validation | 2 documents, 93 chunks; ~1.4s warm query latency with correct citations |
-| 2026-08-07 | Found and fixed 2 production bugs pre-demo | Document-visibility access bug + BM25 background-task session bug |
+| 2026-08-07 | Found and fixed 4 production bugs pre-demo | Document-visibility access bug, BM25 background-task session bug, missing Open WebUI pipe function, and browser answer-parsing bug |
+| 2026-08-07 | Open WebUI browser chat validated end-to-end on production | "Sparkline RAG" routing through access control, retrieval, and reranking with cited answers |
 | TBD | RAGAS evaluation run | Will populate faithfulness / relevance / precision metrics |
 
 ---
