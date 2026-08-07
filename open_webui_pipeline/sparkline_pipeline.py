@@ -26,6 +26,7 @@ class Pipe:
         request_timeout_seconds: int = 300
         show_citations: bool = True
         show_agent_type: bool = True
+        max_sources_shown: int = 3
 
     def __init__(self):
         self.type = "pipe"
@@ -176,18 +177,47 @@ class Pipe:
     ) -> str:
         parts = [answer]
         if citations and self.valves.show_citations:
-            parts.append("\n\n---\n**📚 Sources:**")
-            for i, citation in enumerate(citations, start=1):
+            shown = self._dedupe_citations(citations, self.valves.max_sources_shown)
+            label = "Source" if len(shown) == 1 else "Sources"
+            parts.append(f"\n\n---\n**📚 {label}:**")
+            for i, citation in enumerate(shown, start=1):
                 doc = citation.get("document_name", "Unknown")
                 page = citation.get("page_number")
                 uploaded = str(citation.get("version_uploaded_at", ""))[:10]
                 page_str = f"p.{page}" if page else ""
-                parts.append(f"  {i}. **{doc}** {page_str} *(uploaded {uploaded})*")
+                prefix = f"  {i}. " if len(shown) > 1 else "  "
+                parts.append(f"{prefix}**{doc}** {page_str} *(uploaded {uploaded})*")
 
         if self.valves.show_agent_type and agent_type and agent_type != "general":
             parts.append(f"\n*🤖 Agent: {agent_type}*")
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _dedupe_citations(citations: list[dict], max_shown: int) -> list[dict]:
+        """
+        Collapse citations down to one entry per source document.
+
+        The backend returns one citation per retrieved chunk, ranked best-first, so
+        several entries commonly point at the same file — which renders as the same
+        filename listed three or four times. Keep only each document's highest-ranked
+        chunk, capped at max_shown. A single-document answer therefore shows exactly
+        one source.
+
+        Note this is display-only: the full per-chunk citation list still comes back
+        from the API and is what the audit log records, so traceability is unchanged.
+        """
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for citation in citations:
+            name = citation.get("document_name", "Unknown")
+            if name in seen:
+                continue
+            seen.add(name)
+            deduped.append(citation)
+            if len(deduped) >= max_shown:
+                break
+        return deduped
 
     @staticmethod
     def _new_session_id() -> str:
