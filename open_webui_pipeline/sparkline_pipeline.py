@@ -74,11 +74,33 @@ class Pipe:
             yield f"❌ Error communicating with Sparkline Backend: {e}"
             return
 
-        answer = result.get("answer", "")
+        answer = self._extract_answer(result)
         citations = result.get("citations", [])
         agent_type = result.get("agent_type", "")
 
+        if not answer:
+            yield (
+                "⚠️ The backend returned no answer text"
+                f"{' (sources were still retrieved — see below)' if citations else ''}.\n"
+            )
+
         yield self._format_answer(answer, citations, agent_type)
+
+    @staticmethod
+    def _extract_answer(result: dict) -> str:
+        """
+        Pull the answer text out of the backend response.
+
+        The gateway speaks the OpenAI chat-completions shape, so the text lives at
+        choices[0].message.content. A bare "answer" key is also accepted so this
+        keeps working if the backend is ever simplified.
+        """
+        choices = result.get("choices") or []
+        if choices:
+            content = (choices[0].get("message") or {}).get("content")
+            if content:
+                return content
+        return result.get("answer", "") or ""
 
     def _get_auth(self, user_id: str, username: str) -> dict:
         """Fetch token, generating/refreshing if missing."""
