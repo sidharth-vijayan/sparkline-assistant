@@ -69,7 +69,10 @@ def hybrid_search(
         qdrant_filter: Access-control filter from the PEP (applied to dense search)
         top_k_dense: Dense retrieval candidates per search
         top_k_bm25: BM25 candidates per search
-        top_k_final: Final number of chunks to return after RRF merge
+        top_k_final: Candidates to keep after the RRF merge. This is the pool the
+            cross-encoder reranker then scores and cuts down to the final k — it
+            is deliberately NOT the final answer size. Defaults to
+            settings.retrieval_top_k_fusion.
 
     Returns:
         List of chunk payload dicts, RRF-ranked, limited to top_k_final.
@@ -77,7 +80,7 @@ def hybrid_search(
     """
     k_dense = top_k_dense or settings.retrieval_top_k_dense
     k_bm25 = top_k_bm25 or settings.retrieval_top_k_bm25
-    k_final = top_k_final or settings.retrieval_top_k_rerank
+    k_final = top_k_final or settings.retrieval_top_k_fusion
 
     # ── Dense retrieval ───────────────────────────────────────────
     query_vector = embed_query(query)
