@@ -70,15 +70,38 @@ def create_app() -> FastAPI:
             logger.warning("startup.qdrant.failed", error=str(e))
 
         # BM25 index — load from disk or build from Postgres
+        #
+        # The pickle is only trusted if its corpus size still matches the number
+        # of active chunks in Postgres. Without that check a rebuild that failed
+        # after an ingestion leaves a stale index on disk that every subsequent
+        # startup happily reloads, so keyword search silently goes blind to the
+        # documents ingested since — with no error anywhere.
         try:
-            from ingestion.bm25_index import build_index, load_index_from_disk
+            from ingestion.bm25_index import (
+                build_index,
+                count_active_chunks,
+                get_index_size,
+                load_index_from_disk,
+            )
+            from services.postgres_service import AsyncSessionLocal
+
             loaded = load_index_from_disk()
-            if not loaded:
-                logger.info("startup.bm25.building_from_db")
-                from services.postgres_service import AsyncSessionLocal
-                async with AsyncSessionLocal() as db:
+            async with AsyncSessionLocal() as db:
+                active_chunks = await count_active_chunks(db)
+
+                if loaded and get_index_size() != active_chunks:
+                    logger.warning(
+                        "startup.bm25.stale_index",
+                        index_size=get_index_size(),
+                        active_chunks=active_chunks,
+                    )
+                    loaded = False
+
+                if not loaded:
+                    logger.info("startup.bm25.building_from_db")
                     await build_index(db)
-            logger.info("startup.bm25.ok")
+
+            logger.info("startup.bm25.ok", corpus_size=get_index_size())
         except Exception as e:
             logger.warning("startup.bm25.failed", error=str(e))
 
