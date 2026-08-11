@@ -117,3 +117,7 @@ demo_docs/
 
 # Runtime logs
 logs/
+
+# Personal working notes and academic paperwork — not part of the project
+INTERNSHIP_LOGBOOK_CONTENT.md
+ROUTING_FIX_PLAN.md
