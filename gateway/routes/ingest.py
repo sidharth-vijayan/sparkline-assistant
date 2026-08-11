@@ -160,8 +160,14 @@ async def ingest_document(
     # ── Rebuild BM25 index ─────────────────────────────────────────
     try:
         from ingestion.bm25_index import build_index
+        from services.postgres_service import get_db_context
         import asyncio
-        asyncio.create_task(build_index(db))
+
+        async def _rebuild_bm25_background() -> None:
+            async with get_db_context() as bg_db:
+                await build_index(bg_db)
+
+        asyncio.create_task(_rebuild_bm25_background())
     except Exception as e:
         logger.warning("ingest.bm25_rebuild_failed", error=str(e))
         # BM25 rebuild failure is non-fatal — dense search still works
