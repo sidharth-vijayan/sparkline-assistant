@@ -23,12 +23,13 @@ from __future__ import annotations
 import asyncio
 import os
 import pickle
+import re
 from pathlib import Path
 from typing import Optional
 
 import structlog
 from rank_bm25 import BM25Okapi
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings
@@ -45,9 +46,25 @@ _chunk_ids: list[str] = []      # Parallel list: _chunk_ids[i] → _bm25 corpus[
 _chunk_texts: list[str] = []
 
 
+# Bumped whenever _tokenize changes. A persisted index tokenized by an older
+# rule cannot be queried with a newer one — the tokens simply won't line up —
+# so a version mismatch forces a rebuild instead of silently degrading recall.
+_TOKENIZER_VERSION = 2
+
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
 def _tokenize(text: str) -> list[str]:
-    """Simple whitespace + lowercase tokenizer for BM25."""
-    return text.lower().split()
+    """
+    Lowercase, punctuation-stripped tokenizer for BM25.
+
+    Splitting on whitespace alone kept punctuation attached to the token, so a
+    query for "MinIO?" produced the token "minio?" and matched nothing in an
+    index built from "minio". Keyword search then silently dropped out of the
+    hybrid merge for any question ending in a question mark — which is most of
+    them.
+    """
+    return _TOKEN_RE.findall(text.lower())
 
 
 async def build_index(db: AsyncSession) -> None:
@@ -86,7 +103,15 @@ async def build_index(db: AsyncSession) -> None:
     # Persist to disk for faster restarts
     _INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(_INDEX_PATH, "wb") as f:
-        pickle.dump({"chunk_ids": _chunk_ids, "chunk_texts": _chunk_texts, "bm25": _bm25}, f)
+        pickle.dump(
+            {
+                "chunk_ids": _chunk_ids,
+                "chunk_texts": _chunk_texts,
+                "bm25": _bm25,
+                "tokenizer_version": _TOKENIZER_VERSION,
+            },
+            f,
+        )
     logger.info("bm25.saved", path=str(_INDEX_PATH))
 
 
@@ -104,6 +129,15 @@ def load_index_from_disk() -> bool:
     try:
         with open(_INDEX_PATH, "rb") as f:
             data = pickle.load(f)
+
+        if data.get("tokenizer_version") != _TOKENIZER_VERSION:
+            logger.warning(
+                "bm25.tokenizer_version_mismatch",
+                index_version=data.get("tokenizer_version"),
+                current_version=_TOKENIZER_VERSION,
+            )
+            return False
+
         _bm25 = data["bm25"]
         _chunk_ids = data["chunk_ids"]
         _chunk_texts = data["chunk_texts"]
@@ -145,3 +179,18 @@ def search(query: str, top_k: int = 20) -> list[dict]:
 def get_index_size() -> int:
     """Return the number of documents in the current BM25 index."""
     return len(_chunk_ids)
+
+
+async def count_active_chunks(db: AsyncSession) -> int:
+    """
+    Count the chunks belonging to active document versions.
+
+    Used at startup to detect a stale on-disk index: if this disagrees with
+    get_index_size(), the pickle predates an ingestion and must be rebuilt.
+    """
+    result = await db.execute(
+        select(func.count(Chunk.id))
+        .join(DocumentVersion, Chunk.document_version_id == DocumentVersion.id)
+        .where(DocumentVersion.is_active == True)  # noqa: E712
+    )
+    return int(result.scalar_one())
