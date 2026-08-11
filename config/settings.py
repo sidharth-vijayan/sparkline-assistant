@@ -107,12 +107,45 @@ class Settings(BaseSettings):
     # ── Retrieval Settings ────────────────────────────────────────
     retrieval_top_k_dense: int = 20
     retrieval_top_k_bm25: int = 20
+    # Candidates that survive the RRF merge and are handed to the cross-encoder.
+    # Must be larger than retrieval_top_k_rerank, otherwise the fusion step
+    # truncates to the final answer size and the reranker can only reorder what
+    # RRF already chose — it can never promote a chunk RRF ranked too low.
+    retrieval_top_k_fusion: int = 20
     retrieval_top_k_rerank: int = 5
     retrieval_rrf_k: int = 60  # RRF constant — higher = less steep rank decay
 
     # ── Chunking ─────────────────────────────────────────────────
     chunk_size_tokens: int = 400
     chunk_overlap_tokens: int = 80
+
+    # ── Query Routing ─────────────────────────────────────────────
+    # 'evidence' routes on retrieval quality: run retrieval, then read the top
+    # cross-encoder rerank score to choose documents vs. general knowledge.
+    # 'legacy' restores the original always-RAG behaviour for a fast rollback.
+    router_mode: Literal["evidence", "legacy"] = "evidence"
+
+    # Rerank-score bands. The cross-encoder emits raw logits (~-11..+11), not
+    # probabilities, so these are corpus-specific and MUST be re-measured with
+    # `python -m eval.calibrate_router` whenever the document set changes
+    # substantially. Current values come from a 12-in-corpus / 15-general run
+    # against the 93-chunk pilot corpus (2026-08-11).
+    #   score >= high        → documents only, strict grounded prompt
+    #   low <= score < high  → blended: documents supplied, general knowledge
+    #                          permitted, model must flag which is which
+    #   score < low          → general knowledge only, no context, no citations
+    router_rag_score_high: float = -2.0
+    router_rag_score_low: float = -5.5
+
+    # If a strict-RAG answer still comes back as "I couldn't find this in the
+    # documents", retry the query in general mode rather than showing the user
+    # a dead end. Does not apply when the user explicitly named a document.
+    router_enable_general_fallback: bool = True
+
+    # Prepend the previous question to the retrieval query for short/anaphoric
+    # follow-ups ("what about last year?") so they don't drop out of a document
+    # conversation. Affects retrieval only, never the prompt.
+    router_condense_followups: bool = True
 
     # ── Access Control ────────────────────────────────────────────
     # Default role for pilot users who have no dept/designation yet.
