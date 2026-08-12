@@ -103,6 +103,51 @@ async def clear_session(session_id: str) -> None:
     logger.info("redis.session.cleared", session_id=session_id)
 
 
+def _last_document_query_key(session_id: str) -> str:
+    return f"session:{session_id}:last_doc_query"
+
+
+# How much of the previous answer to keep in the anchor. Enough to carry the
+# entities the follow-up refers to, short enough not to swamp the embedding of
+# the question itself.
+_ANCHOR_ANSWER_CHARS = 240
+
+
+async def set_last_document_query(session_id: str, query: str, answer: str = "") -> None:
+    """
+    Remember the most recent exchange that was answered from documents.
+
+    Follow-ups are expanded with this rather than with the previous turn, because
+    users interleave general questions into document conversations ("...and why
+    those?" after a detour through "what is 2+2"). Anchoring on the previous turn
+    picks up the detour and loses the thread.
+
+    The answer is stored alongside the question because follow-ups routinely
+    refer to things only the answer named: after "which agents sit behind the
+    orchestrator", "and why were those four chosen?" points at four systems the
+    question never mentioned. Anchoring on the question alone retrieves the wrong
+    passages and the model refuses.
+    """
+    client = _get_client()
+    anchor = query
+    if answer:
+        anchor = f"{query} {' '.join(answer.split())[:_ANCHOR_ANSWER_CHARS]}"
+    await client.setex(
+        _last_document_query_key(session_id),
+        settings.redis_session_ttl_seconds,
+        anchor,
+    )
+
+
+async def get_last_document_query(session_id: str) -> Optional[str]:
+    """Return the last document-answered question in this session, if any."""
+    client = _get_client()
+    raw = await client.get(_last_document_query_key(session_id))
+    if raw is None:
+        return None
+    return raw.decode() if isinstance(raw, bytes) else str(raw)
+
+
 async def get_session_meta(session_id: str) -> Optional[dict[str, Any]]:
     """Return session metadata or None if the session doesn't exist / has expired."""
     client = _get_client()
