@@ -63,10 +63,16 @@ _INTENT_PATTERNS: list[tuple[QueryIntent, list[str]]] = [
     ),
     (
         QueryIntent.DOCUMENT_QA,
+        # Deliberately narrow: only phrasings where the user has actually named
+        # a source. The generic-English patterns that used to live here
+        # ("what is the", "how does", "summarize", "explain the", "when was")
+        # matched almost every question ever asked, which is how every query
+        # ended up in the RAG agent. Deciding whether an unmarked question is
+        # answerable from the corpus is the evidence gate's job now — see
+        # router/route_decision.py — because only the corpus can answer that.
         [
-            "according to", "based on", "in the document", "policy says",
-            "what does the", "summarize", "explain the", "what is the",
-            "how does", "when was", "where is", "who is responsible",
+            "according to", "in the document", "policy says",
+            "as per the", "the report says", "the guide says",
         ],
     ),
 ]
@@ -77,8 +83,13 @@ def classify_intent(query: str) -> QueryIntent:
     Classify the intent of a user query.
 
     Uses pattern matching — fast, deterministic, no LLM call.
-    Falls back to DOCUMENT_QA (most common case) if no pattern matches,
-    since this system's primary use case is document Q&A.
+
+    Falls back to DOCUMENT_QA when nothing matches, but note what that fallback
+    now means: it is the PDP's resource category for the request, not a decision
+    that the answer will come from documents. QueryRouter runs the evidence gate
+    over anything the rules didn't decide, and may still answer it from general
+    knowledge. Treating this return value as the final routing decision is what
+    made the general agent unreachable in the first place.
 
     Args:
         query: Raw user query string
