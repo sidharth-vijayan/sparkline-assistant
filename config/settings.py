@@ -30,6 +30,20 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60
 
+    # ── Service authentication (trusted gateway) ─────────────────
+    # Open WebUI authenticates the user itself, then asks this API for a session
+    # on their behalf, presenting this secret instead of the user's password.
+    # That is what lets users change their own passwords without the chat
+    # pipeline knowing them — or breaking when they do.
+    #
+    # This secret can mint a session for ANY user, so it is env-only and never
+    # defaulted to a usable value: an empty string disables issuance entirely
+    # (fail closed) rather than leaving a guessable shared secret in place.
+    service_token: str = ""
+
+    # Minimum length enforced on any password set through the API.
+    min_password_length: int = 8
+
     # ── PostgreSQL ───────────────────────────────────────────────
     postgres_user: str = "sparkline"
     postgres_password: str = "sparkline_secret"
@@ -119,6 +133,17 @@ class Settings(BaseSettings):
     chunk_size_tokens: int = 400
     chunk_overlap_tokens: int = 80
 
+    # Ceiling on chunks indexed from a single document. Cost is driven by chunk
+    # count, not file size: embedding runs on CPU at roughly three chunks per
+    # second, so 1,000 chunks is about five minutes. A 120,000-row spreadsheet
+    # produces ~10,800 chunks — close to an hour, during which the upload looks
+    # frozen — and floods retrieval with near-identical rows. Beyond the ceiling
+    # the document is indexed proportionally across its pages/sheets and the
+    # uploader is told, rather than the file being rejected or silently halved.
+    # Raise it if a slow upload is acceptable; embedding on GPU would lift this
+    # substantially, but that needs the api container rebuilt with GPU access.
+    ingest_max_chunks_per_document: int = 1000
+
     # ── Query Routing ─────────────────────────────────────────────
     # 'evidence' routes on retrieval quality: run retrieval, then read the top
     # cross-encoder rerank score to choose documents vs. general knowledge.
@@ -146,6 +171,50 @@ class Settings(BaseSettings):
     # follow-ups ("what about last year?") so they don't drop out of a document
     # conversation. Affects retrieval only, never the prompt.
     router_condense_followups: bool = True
+
+    # ── Typo Tolerance ────────────────────────────────────────────
+    # A misspelled document question retrieves worse, scores lower, and falls
+    # out of the document band into general knowledge — so typo handling is part
+    # of routing, not a cosmetic nicety.
+    #
+    # Corrections are drawn from the vocabulary of whatever documents are
+    # currently ingested (see ingestion/bm25_index.get_vocabulary), which is
+    # rebuilt on every ingestion. Nothing here is specific to any document:
+    # upload a new corpus and the vocabulary follows it with no code change.
+    typo_correction_enabled: bool = True
+
+    # Tokens shorter than this are never corrected. Short words are mostly
+    # function words, and at 3 characters almost everything is within edit
+    # distance 1 of something.
+    typo_min_token_length: int = 4
+
+    # Damerau-Levenshtein budget. Applied as: distance 1 for tokens of
+    # 4-6 characters, up to this value for 7+. Transpositions count as one edit
+    # ("waht" → "what"), which plain Levenshtein would score as two.
+    typo_max_edit_distance: int = 2
+
+    # Second pass for misspellings that are too far off for edit distance but
+    # sound right ("diprisiation" → "depreciation"). Costs no GPU.
+    typo_phonetic_enabled: bool = True
+
+    # Never "correct" an ordinary English word just because the documents happen
+    # not to use it. A word missing from the corpus is not evidence of a typo —
+    # with a small corpus it is usually evidence of a general question. Without
+    # this, "tell me a joke" was searched for as "well me a joke".
+    #
+    # The word list is the reranker's own tokenizer vocabulary (~30k English
+    # word pieces), which is already loaded for scoring. No extra dependency, no
+    # hand-maintained dictionary, and it is corpus-independent by construction.
+    typo_protect_dictionary_words: bool = True
+
+    # Tier 3: ask the LLM to rewrite a query that still finds nothing after the
+    # cheap passes. Genuinely semantic, but non-deterministic, adds a GPU
+    # round-trip, and will happily "correct" domain terms like BOQ or Field
+    # Circle. Off by default — turn on only if real usage shows the cheap
+    # passes are not enough. Never fires unless the query has words the corpus
+    # does not contain AND retrieval already failed.
+    typo_semantic_rewrite_enabled: bool = False
+    typo_semantic_rewrite_timeout_seconds: int = 15
 
     # ── Access Control ────────────────────────────────────────────
     # Default role for pilot users who have no dept/designation yet.
