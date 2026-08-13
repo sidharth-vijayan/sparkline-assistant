@@ -139,5 +139,10 @@ async def chat_completions(
         "tool_outputs": agent_response.get("tool_outputs", []),
         "agent_type": agent_response.get("agent_type", "unknown"),
         "intent": agent_response.get("intent", "unknown"),
+        # Top cross-encoder rerank score behind the routing decision. Exposed so
+        # the score bands can be retuned against real pilot traffic rather than
+        # only against the calibration set. None when the query never reached
+        # retrieval (small talk) or was answered from general knowledge.
+        "top_rerank_score": agent_response.get("top_rerank_score"),
         "session_id": session_id,
     }
