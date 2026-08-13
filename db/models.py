@@ -214,10 +214,13 @@ class AuditLog(Base):
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
     )
 
-    # Which agent handled this query — matches router dispatch types
-    agent_type: Mapped[str] = mapped_column(
-        String(50), nullable=False
-    )  # 'general' | 'document_rag' | 'enterprise'
+    # Which agent handled this query — matches router dispatch types.
+    # 'document_rag'          answered from documents, strict grounded prompt
+    # 'document_rag_blended'  documents supplied, general knowledge permitted
+    # 'general'               answered from general knowledge, no retrieval used
+    # 'general_fallback'      documents were searched first and did not cover it
+    # 'enterprise'            enterprise agent (MCP adapter workstream)
+    agent_type: Mapped[str] = mapped_column(String(50), nullable=False)
 
     query_text: Mapped[str] = mapped_column(Text, nullable=False)
     session_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
