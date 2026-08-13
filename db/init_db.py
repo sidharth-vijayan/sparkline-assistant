@@ -1,14 +1,24 @@
 """
 db/init_db.py
 ─────────────
-Utility to create all tables and seed the 10 pilot users.
-Run once at initial setup:  python -m db.init_db
+Create all tables and ensure the administrator account exists.
+Run at initial setup:  python -m db.init_db
+
+Pilot users are NOT seeded here — that roster changes, and reconciling it lives
+in db/seed_pilot_users.py, which is idempotent and can be re-run safely:
+
+    python -m db.seed_pilot_users --password '<password>' --apply
+
+This script is safe to re-run: it creates the admin only if absent, and never
+touches an existing account's password.
 """
 
 import asyncio
+import os
 import uuid
-from passlib.context import CryptContext
 
+from passlib.context import CryptContext
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
@@ -18,25 +28,11 @@ from db.models import Base, User
 settings = get_settings()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-PILOT_USERS = [
-    {"username": "siddharth.doshi", "full_name": "Siddharth Doshi", "email": "siddharth.doshi@sparkline.in"},
-    {"username": "sidharth.vijayan", "full_name": "Sidharth Vijayan", "email": "sidharth.vijayan@sparkline.in"},
-    {"username": "shruti.doshi", "full_name": "Shruti Doshi", "email": "shruti.doshi@sparkline.in"},
-    {"username": "sandeep.pansare", "full_name": "Sandeep Pansare", "email": "sandeep.pansare@sparkline.in"},
-    {"username": "ajit.mahabare", "full_name": "Ajit Mahabare", "email": "ajit.mahabare@sparkline.in"},
-    {"username": "amogh.doshi", "full_name": "Amogh Doshi", "email": "amogh.doshi@sparkline.in"},
-    {"username": "parag.finance", "full_name": "Parag Finance", "email": "parag.finance@sparkline.in"},
-    {"username": "suraj.finance", "full_name": "Suraj Finance", "email": "suraj.finance@sparkline.in"},
-    {"username": "vikas.ranaware", "full_name": "Vikas Ranaware", "email": "vikas.ranaware@sparkline.in"},
-    {"username": "yojana", "full_name": "Yojana", "email": "yojana@sparkline.in"},
-    {"username": "roshni", "full_name": "Roshni", "email": "roshni@sparkline.in"},
-]
-
-DEFAULT_PILOT_PASSWORD = "Sparkline@2025"  # Change on first login
+ADMIN_USERNAME = "file.admin"
 
 
 async def init_db() -> None:
-    engine = create_async_engine(settings.database_url, echo=True)
+    engine = create_async_engine(settings.database_url, echo=False)
 
     # Create all tables
     async with engine.begin() as conn:
@@ -44,43 +40,41 @@ async def init_db() -> None:
 
     print("[OK] Tables created.")
 
-    # Seed pilot users
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_session() as session:
-        for user_data in PILOT_USERS:
-            user = User(
-                id=uuid.uuid4(),
-                username=user_data["username"],
-                full_name=user_data["full_name"],
-                email=user_data["email"],
-                hashed_password=pwd_context.hash(DEFAULT_PILOT_PASSWORD),
-                department=None,       # Not assigned yet — PDP uses default_role
-                designation=None,      # Not assigned yet — PDP uses default_role
-                default_role=settings.default_pilot_role,
-                is_active=True,
-                is_admin=False,
-                is_file_admin=False,
-            )
-            session.add(user)
-
-        # Seed a file-admin user
-        admin = User(
-            id=uuid.uuid4(),
-            username="file.admin",
-            full_name="File Administrator",
-            email="fileadmin@sparkline.in",
-            hashed_password=pwd_context.hash("FileAdmin@2025"),
-            default_role="file_admin",
-            is_active=True,
-            is_admin=True,
-            is_file_admin=True,
+        result = await session.execute(
+            select(User).where(User.username == ADMIN_USERNAME)
         )
-        session.add(admin)
+        if result.scalar_one_or_none() is not None:
+            print(f"[OK] Admin '{ADMIN_USERNAME}' already exists — left untouched.")
+        else:
+            # Required rather than defaulted: an administrator account that can
+            # create users and reset passwords must not ship with a known password.
+            password = os.getenv("ADMIN_INITIAL_PASSWORD", "")
+            if len(password) < settings.min_password_length:
+                raise SystemExit(
+                    "ADMIN_INITIAL_PASSWORD must be set to at least "
+                    f"{settings.min_password_length} characters to create the admin account."
+                )
 
-        await session.commit()
-        print(f"[OK] Seeded {len(PILOT_USERS)} pilot users + 1 file admin.")
+            session.add(
+                User(
+                    id=uuid.uuid4(),
+                    username=ADMIN_USERNAME,
+                    full_name="File Administrator",
+                    email="fileadmin@sparkline.co.in",
+                    hashed_password=pwd_context.hash(password),
+                    default_role="file_admin",
+                    is_active=True,
+                    is_admin=True,
+                    is_file_admin=True,
+                )
+            )
+            await session.commit()
+            print(f"[OK] Created admin '{ADMIN_USERNAME}'.")
 
     await engine.dispose()
+    print("\nNext: python -m db.seed_pilot_users --password '<password>' --apply")
 
 
 if __name__ == "__main__":
