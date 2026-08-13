@@ -23,6 +23,11 @@ class Pipe:
     class Valves(BaseModel):
         """User-configurable pipeline settings (shown in Open WebUI UI)."""
         sparkline_api_url: str = os.getenv("SPARKLINE_API_URL", "http://host.docker.internal:8000")
+        # Shared secret this pipeline presents to ask the API for a session on
+        # behalf of the person chatting. Open WebUI has already authenticated
+        # them by this point. No user password is stored here, which is what
+        # allows users to change their own passwords without breaking the chat.
+        service_token: str = os.getenv("SPARKLINE_SERVICE_TOKEN", "")
         request_timeout_seconds: int = 300
         show_citations: bool = True
         show_agent_type: bool = True
@@ -68,9 +73,14 @@ class Pipe:
             return
 
         # Always fetch fresh token or session for user
-        state = self._get_auth(user_id, username)
+        state = self._get_auth(user_id, username, user_email)
         if not state.get("token"):
-            yield f"❌ Authentication failed for user '{username}'. Could not log into Sparkline Backend."
+            yield (
+                f"❌ Could not start a Sparkline session for '{user_email or username}'.\n\n"
+                "This usually means there is no Sparkline account for that email "
+                "address, or the pipeline's service token does not match the API. "
+                "Ask an administrator to check."
+            )
             return
 
         # Call orchestrator with auto-retry on 401
@@ -79,6 +89,7 @@ class Pipe:
                 query=query,
                 user_id=user_id,
                 username=username,
+                email=user_email,
                 session_id=state["session_id"],
                 all_messages=messages,
             )
@@ -166,32 +177,64 @@ class Pipe:
                 return content
         return result.get("answer", "") or ""
 
-    def _get_auth(self, user_id: str, username: str) -> dict:
+    def _get_auth(self, user_id: str, username: str, email: str) -> dict:
         """Fetch token, generating/refreshing if missing."""
         if user_id not in self._user_state:
             self._user_state[user_id] = {"token": None, "session_id": self._new_session_id()}
 
         state = self._user_state[user_id]
         if not state.get("token"):
-            state["token"] = self._login(username)
+            state["token"] = self._authenticate(username, email)
 
         return state
 
-    def _login(self, username: str) -> Optional[str]:
-        api_username = username.lower().replace(" ", ".")
-        password = "Sparkline@2025"
+    @staticmethod
+    def _identity(username: str, email: str) -> dict:
+        """
+        Decide how to name this user to the API.
+
+        The email address is authoritative when Open WebUI supplies one: it is
+        exact and stable, whereas the display name is free text a user or an
+        admin can edit. Deriving the account from a display name means "Suraj P"
+        resolves but "Suraj Pansare" silently does not, which surfaces as a
+        login failure nobody can explain.
+
+        Only one identifier is sent, never both — a display name that happens to
+        munge into another person's username must not be able to match.
+        """
+        if email and "@" in email:
+            return {"email": email.strip().lower()}
+        return {"username": (username or "").strip().lower().replace(" ", ".")}
+
+    def _authenticate(self, username: str, email: str) -> Optional[str]:
+        """
+        Ask the API for a session for this user, using the service token.
+
+        Replaces logging in as the user with a shared password. The pipeline
+        holds one secret of its own and never handles user credentials.
+        """
+        if not self.valves.service_token:
+            print(
+                "[SparklinePipe] No service_token configured — set the "
+                "service_token valve (or SPARKLINE_SERVICE_TOKEN) to the value "
+                "of SERVICE_TOKEN in the API's .env"
+            )
+            return None
+
         try:
             with httpx.Client(timeout=30) as client:
                 resp = client.post(
-                    f"{self.valves.sparkline_api_url}/auth/login",
-                    json={"username": api_username, "password": password},
+                    f"{self.valves.sparkline_api_url}/auth/service-token",
+                    headers={"X-Service-Token": self.valves.service_token},
+                    json=self._identity(username, email),
                 )
                 if resp.status_code == 200:
                     return resp.json().get("access_token")
-                else:
-                    print(f"[SparklinePipe] Login returned HTTP {resp.status_code}: {resp.text}")
+                print(
+                    f"[SparklinePipe] Auth returned HTTP {resp.status_code}: {resp.text}"
+                )
         except Exception as e:
-            print(f"[SparklinePipe] Login exception: {e}")
+            print(f"[SparklinePipe] Auth exception: {e}")
         return None
 
     def _call_orchestrator(
@@ -199,6 +242,7 @@ class Pipe:
         query: str,
         user_id: str,
         username: str,
+        email: str,
         session_id: str,
         all_messages: list[dict],
     ) -> dict:
@@ -217,7 +261,7 @@ class Pipe:
             # If 401 Unauthorized, refresh token once and retry
             if resp.status_code == 401:
                 print("[SparklinePipe] Token expired or invalid (401). Refreshing token...")
-                new_token = self._login(username)
+                new_token = self._authenticate(username, email)
                 if new_token:
                     self._user_state[user_id]["token"] = new_token
                     resp = client.post(
