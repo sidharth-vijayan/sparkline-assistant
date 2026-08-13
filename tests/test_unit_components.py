@@ -34,6 +34,13 @@ from access_control.pdp import PDPDecision, UserAttributes, evaluate as pdp_eval
 from access_control.pep import build_qdrant_filter
 from ingestion.chunker import chunk_text, TextChunk
 from retrieval.citation_builder import Citation, build_citations, build_context_block
+from router.route_decision import (
+    Route,
+    build_retrieval_query,
+    is_followup,
+    is_refusal,
+    pre_route,
+)
 
 
 def test_settings_validation():
@@ -44,7 +51,11 @@ def test_settings_validation():
         postgres_host="test_host",
         postgres_port=5432,
         postgres_db="test_db",
-        app_secret_key="a" * 32  # Must be >= 32 chars
+        app_secret_key="a" * 32,  # Must be >= 32 chars
+        # Pinned explicitly: unset fields fall through to the ambient environment,
+        # and in the api container QDRANT_HOST is 'qdrant', not 'localhost'.
+        qdrant_host="localhost",
+        qdrant_port=6333,
     )
     assert "test_user:test_password@test_host:5432/test_db" in settings.database_url
     assert settings.qdrant_url == "http://localhost:6333"
@@ -54,12 +65,110 @@ def test_settings_validation():
     ("create a bar chart of the sales data", QueryIntent.CHART_REQUEST),
     ("export this report to word", QueryIntent.EXPORT_REQUEST),
     ("find document about safety protocols", QueryIntent.DOCUMENT_SEARCH),
-    ("what is the company policy on sick leave", QueryIntent.DOCUMENT_QA),
-    ("what is 2 + 2?", QueryIntent.DOCUMENT_QA),  # Fallback to QA
+    ("according to the policy, how much sick leave do I get", QueryIntent.DOCUMENT_QA),
+    # Unmarked questions fall back to DOCUMENT_QA as the PDP resource category.
+    # That is no longer a routing decision — the evidence gate in QueryRouter
+    # decides whether the answer actually comes from documents.
+    ("what is 2 + 2?", QueryIntent.DOCUMENT_QA),
 ])
 def test_intent_classifier(query, expected_intent):
     """Verify that user queries are correctly classified into intents."""
     assert classify_intent(query) == expected_intent
+
+
+@pytest.mark.parametrize("query,expected_route", [
+    # Small talk — no document could answer these, so retrieval is skipped.
+    ("hi", Route.GENERAL),
+    ("hello there", Route.GENERAL),
+    ("thanks!", Route.GENERAL),
+    ("who are you", Route.GENERAL),
+    ("what can you do", Route.GENERAL),
+    # Explicit document language — honour it without a relevance check.
+    ("according to the safety policy, who signs off audits", Route.DOCUMENTS),
+    ("what does the contract say about penalties", Route.DOCUMENTS),
+    ("summarise the uploaded file", Route.DOCUMENTS),
+    ("what is in project work split.docx", Route.DOCUMENTS),
+    # A greeting in front of a document question is still a document question.
+    ("hi, according to the policy how much leave do I get", Route.DOCUMENTS),
+    # Everything else defers to retrieval scores — the common case.
+    ("what is 2 + 2", Route.UNDECIDED),
+    ("what is the standard warranty period", Route.UNDECIDED),
+    ("which agents sit behind the orchestrator", Route.UNDECIDED),
+    # "hi" must not fire inside an ordinary word.
+    ("which frontend is used as the chat client", Route.UNDECIDED),
+])
+def test_pre_route(query, expected_route):
+    """Verify the pre-retrieval routing rules."""
+    assert pre_route(query) == expected_route
+
+
+@pytest.mark.parametrize("answer,expected", [
+    ("I couldn't find this in the available documents.", True),
+    ("I couldn't find any relevant documents for your query.", True),
+    ("I could not find that information in the provided sources.", True),
+    ("The leave policy allows 12 days of annual leave.", False),
+    ("", False),
+    # A grounded answer that merely notes a gap must NOT be discarded — the
+    # fallback would replace real cited content with general knowledge.
+    (
+        "The Q3 report gives revenue of 4.2 crore and expenses of 3.1 crore. "
+        "It does not contain a segment-wise breakdown in the provided document, "
+        "but the summary on page 4 states that the equipment division accounted "
+        "for the majority of the growth, with the remainder split across the "
+        "services and rental lines as detailed in the appendix table.",
+        False,
+    ),
+])
+def test_refusal_detection(answer, expected):
+    """The safety net must recognise a dead-end RAG answer."""
+    assert is_refusal(answer) == expected
+
+
+@pytest.mark.parametrize("query,expected", [
+    # Genuinely dependent on an earlier turn.
+    ("what about last year?", True),
+    ("why?", True),
+    ("and the second one", True),
+    ("explain that further", True),
+    ("and why were those four chosen?", True),
+    ("tell me more", True),
+    ("how about the other one?", True),
+    # Self-contained — must NOT be glued to the previous document question.
+    # Every one of these was misclassified by the earlier length-based rule and
+    # reached users as a document refusal.
+    ("what is 2 + 2", False),
+    ("explain what depreciation means", False),
+    ("which agents sit behind the orchestrator", False),
+    ("what is the leave policy", False),
+    ("write a python function", False),
+    # "that" as a relative pronoun in a longer question is not anaphora.
+    ("what is the policy that applies to unpaid leave for contractors", False),
+    ("what are the standard safety requirements for operating heavy equipment", False),
+])
+def test_followup_detection(query, expected):
+    """
+    Follow-ups are detected by grammatical dependency, not by length.
+
+    Regression guard: treating every short query as a follow-up sent
+    "what is 2 + 2" into the document pipeline attached to an unrelated
+    question, where it scored 4.34, was refused, and took ~6s to answer.
+    """
+    assert is_followup(query) == expected
+
+
+def test_build_retrieval_query_expands_followups():
+    """A follow-up is expanded with the anchor question — for retrieval only."""
+    anchor = "what does the leave policy say"
+
+    assert build_retrieval_query("what about sick leave?", anchor) == (
+        "what does the leave policy say what about sick leave?"
+    )
+    # A self-contained question is left alone.
+    long_query = "which MCP tools does the enterprise agent pick between and why"
+    assert build_retrieval_query(long_query, anchor) == long_query
+    # No anchor to draw on — nothing to expand with.
+    assert build_retrieval_query("why?", None) == "why?"
+    assert build_retrieval_query("why?", "") == "why?"
 
 
 def test_pdp_evaluation():
