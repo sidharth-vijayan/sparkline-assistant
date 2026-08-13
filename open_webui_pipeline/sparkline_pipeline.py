@@ -56,6 +56,17 @@ class Pipe:
 
         query = user_messages[-1].get("content", "")
 
+        # Open WebUI issues its own housekeeping requests against the selected
+        # model — conversation titles, tags, follow-up suggestions. They must not
+        # reach the orchestrator: each one costs a full PDP + retrieval + rerank
+        # + GPU pass, lands in the Redis conversation history as though the user
+        # had typed a 2KB prompt, and the answer surfaces in the chat (a "hi"
+        # once came back as {"title": "Greeting"}). Answer them here instead.
+        task = self._detect_task(body, query)
+        if task:
+            yield self._handle_task(task, messages)
+            return
+
         # Always fetch fresh token or session for user
         state = self._get_auth(user_id, username)
         if not state.get("token"):
@@ -86,6 +97,58 @@ class Pipe:
             )
 
         yield self._format_answer(answer, citations, agent_type)
+
+    @staticmethod
+    def _detect_task(body: dict, query: str) -> Optional[str]:
+        """
+        Identify an Open WebUI internal task request.
+
+        Recent versions label these in metadata; older ones don't, so the prompt
+        text is checked as well — every task prompt is built from the same
+        "### Task:" template, and none of it is anything a user would type.
+        """
+        metadata = body.get("metadata") or {}
+        task = metadata.get("task")
+        if task:
+            return str(task)
+
+        head = query.lstrip()[:400].lower()
+        if not head.startswith("### task:"):
+            return None
+        if "tag" in head:
+            return "tags_generation"
+        if "title" in head:
+            return "title_generation"
+        if "quer" in head:
+            return "query_generation"
+        return "unknown_task"
+
+    @staticmethod
+    def _handle_task(task: str, messages: list[dict]) -> str:
+        """
+        Answer an Open WebUI task locally, in the JSON shape it expects.
+
+        Titles are derived from the user's first message rather than generated,
+        which costs no GPU time and — on a shared box where the LLM is the
+        bottleneck — is the difference between a chat that responds instantly
+        and one that stalls twice per message.
+        """
+        if "tag" in task:
+            return '{"tags": ["general"]}'
+
+        if "quer" in task:
+            return '{"queries": []}'
+
+        # Title: first thing the user actually asked, trimmed to a sane length.
+        first_user = next(
+            (m.get("content", "") for m in messages if m.get("role") == "user"),
+            "",
+        )
+        title = " ".join(first_user.split())[:48].strip() or "New Chat"
+        if len(" ".join(first_user.split())) > 48:
+            title = title.rsplit(" ", 1)[0] + "…"
+        title = title.replace('"', "'").replace("\\", "")
+        return '{"title": "%s"}' % title
 
     @staticmethod
     def _extract_answer(result: dict) -> str:
@@ -188,10 +251,29 @@ class Pipe:
                 prefix = f"  {i}. " if len(shown) > 1 else "  "
                 parts.append(f"{prefix}**{doc}** {page_str} *(uploaded {uploaded})*")
 
-        if self.valves.show_agent_type and agent_type and agent_type != "general":
-            parts.append(f"\n*🤖 Agent: {agent_type}*")
+        if self.valves.show_agent_type and agent_type:
+            parts.append(f"\n*{self._agent_label(agent_type)}*")
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _agent_label(agent_type: str) -> str:
+        """
+        Human-readable footer describing where the answer came from.
+
+        Routing is automatic and invisible, so the user never chose a mode — which
+        makes it our job to say whether an answer is grounded in Sparkline
+        documents or is the model's own general knowledge. Silently mixing the two
+        is the failure mode to avoid in an enterprise setting.
+        """
+        return {
+            "document_rag": "📄 Answered from Sparkline documents",
+            "document_rag_blended": "📄 Partly from Sparkline documents — "
+                                    "general knowledge where the documents were silent",
+            "general": "🌐 Answered from general knowledge — no Sparkline documents used",
+            "general_fallback": "🌐 Not covered by the Sparkline documents — "
+                                "answered from general knowledge",
+        }.get(agent_type, f"🤖 Agent: {agent_type}")
 
     @staticmethod
     def _dedupe_citations(citations: list[dict], max_shown: int) -> list[dict]:
