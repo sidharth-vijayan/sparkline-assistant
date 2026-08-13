@@ -18,14 +18,16 @@ saw and asks for a human read rather than silently passing.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 
 import httpx
 
-BASE = "http://localhost:8000"
-USER = "sidharth.vijayan"
-PASSWORD = "Sparkline@2025"
+from config.settings import get_settings
+
+BASE = os.getenv("SPARKLINE_API_URL", "http://localhost:8000")
+USER = os.getenv("SPARKLINE_CHECK_USER", "sidharth.vijayan")
 
 GREEN, RED, YELLOW, BLUE, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[94m", "\033[0m"
 
@@ -53,7 +55,27 @@ def review(msg: str) -> None:
 
 
 def login() -> str:
-    r = httpx.post(f"{BASE}/auth/login", json={"username": USER, "password": PASSWORD}, timeout=30)
+    """
+    Get a session using the service token rather than a user password.
+
+    Deliberately the same route the Open WebUI pipeline uses, so this suite
+    exercises the path real traffic takes. It also means these checks keep
+    working when someone changes their own password, and that no credential
+    has to live in this file.
+    """
+    token = get_settings().service_token
+    if not token:
+        raise SystemExit(
+            "SERVICE_TOKEN is not set. These checks authenticate the same way the "
+            "chat pipeline does; set it in .env and restart the api container."
+        )
+
+    r = httpx.post(
+        f"{BASE}/auth/service-token",
+        headers={"X-Service-Token": token},
+        json={"username": USER},
+        timeout=30,
+    )
     r.raise_for_status()
     return r.json()["access_token"]
 
@@ -150,6 +172,58 @@ def check_fallback(token: str) -> None:
         review("fallback never triggered — either the gate routed these to general "
                "directly, or the LLM answered from context. Both are acceptable; "
                "confirm the answers above are useful.")
+
+
+# ── 2b. Typo tolerance ────────────────────────────────────────────────
+# The whole point of the feature, checked through the API rather than against
+# the normalizer in isolation: a misspelled question about a document we hold
+# must be answered from that document, and a correctly spelled general question
+# must not be dragged into the documents by a spurious "correction".
+def check_typos(token: str) -> None:
+    section("2b. Typo tolerance (misspelled document questions still reach the documents)")
+
+    misspelled = [
+        "which agnets sit behnd the orchestratr",
+        "who owsn the documnet Q&A layr",
+        "what is stroed in MinlO",
+    ]
+    for query in misspelled:
+        result = ask(token, query)
+        agent = result.get("agent_type")
+        score = result.get("top_rerank_score")
+        score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "—"
+        print(f"    {query!r} → {agent} (score {score_s})")
+
+        if agent in ("document_rag", "document_rag_blended"):
+            ok(f"misspelled question routed to documents: {query!r}")
+        else:
+            fail(f"misspelled question fell out of the documents ({agent}): {query!r}")
+
+    # The other half of the guarantee. A correctly spelled general question must
+    # come back untouched; correcting ordinary words toward a small technical
+    # corpus once turned "tell me a joke" into "well me a joke".
+    for query in ("tell me a joke", "how many days are in a leap year"):
+        result = ask(token, query)
+        agent = result.get("agent_type")
+        print(f"    {query!r} → {agent}")
+        if agent in ("general", "general_fallback"):
+            ok(f"general question left alone: {query!r}")
+        else:
+            fail(f"general question pulled into the documents ({agent}): {query!r}")
+
+    # A badly mangled word must not produce a confident invented definition.
+    # Correcting retrieval but leaving the prompt with the user's raw word made
+    # the model refuse, and the fallback then defined a word that does not exist.
+    result = ask(token, "what is diprisiation")
+    answer = result["_answer"]
+    print(f"    'what is diprisiation' → {result.get('agent_type')}")
+    print(f"      {answer[:160].strip()}")
+    if "depreciat" in answer.lower():
+        ok("heavily misspelled word was read as the word it resembles")
+    else:
+        review("check the answer above reads 'diprisiation' as 'depreciation' rather "
+               "than inventing a meaning for it (needs a document mentioning "
+               "depreciation to be ingested)")
 
 
 # ── 3. Blended-mode honesty ───────────────────────────────────────────
@@ -275,6 +349,7 @@ def main() -> None:
 
     asyncio.run(check_history(token))
     check_fallback(token)
+    check_typos(token)
     check_blended(token)
     check_mixed(token)
     check_degenerate(token)
