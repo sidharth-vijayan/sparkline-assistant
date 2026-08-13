@@ -17,6 +17,7 @@ What it checks:
 """
 
 import asyncio
+import os
 import sys
 import httpx
 import structlog
@@ -133,17 +134,34 @@ def check_auth():
 
 
 def check_pilot_user_login():
+    """
+    Check that the chat front end can obtain a session for a pilot user.
+
+    Uses the service token, which is how the Open WebUI pipeline authenticates.
+    It previously logged in as a named pilot user with a shared password — that
+    breaks whenever the roster changes or someone changes their own password,
+    and it put a credential in this file.
+    """
     section("Pilot User Login")
+
+    from config.settings import get_settings
+
+    user = os.getenv("SPARKLINE_CHECK_USER", "sidharth.vijayan")
+    service_token = get_settings().service_token
+    if not service_token:
+        return fail("SERVICE_TOKEN is not set — the chat pipeline cannot authenticate anyone")
+
     try:
         with httpx.Client(timeout=10) as client:
             r = client.post(
-                "http://localhost:8000/auth/login",
-                json={"username": "siddharth.doshi", "password": "Sparkline@2025"}
+                "http://localhost:8000/auth/service-token",
+                headers={"X-Service-Token": service_token},
+                json={"username": user},
             )
             if r.status_code == 200:
-                ok("Pilot user 'siddharth.doshi' can log in")
+                ok(f"front end can open a session for '{user}'")
                 return True
-            return fail(f"Pilot user login failed {r.status_code}: {r.text}")
+            return fail(f"Service-token auth failed {r.status_code}: {r.text}")
     except Exception as e:
         return fail(f"Pilot user login check failed: {e}")
 
