@@ -21,6 +21,11 @@ mock_encoding = MagicMock()
 mock_encoding.encode = lambda text: [1] * len(text.split())
 mock_encoding.decode = lambda tokens: " ".join(["mock_word"] * len(tokens))
 mock_tiktoken.get_encoding.return_value = mock_encoding
+# A bare MagicMock has no __spec__, and importlib raises "tiktoken.__spec__ is
+# not set" as soon as anything imports a module that imports tiktoken — which
+# includes the gateway routes. Give the stub a real spec so those imports work.
+from importlib.machinery import ModuleSpec  # noqa: E402
+mock_tiktoken.__spec__ = ModuleSpec("tiktoken", loader=None)
 sys.modules['tiktoken'] = mock_tiktoken
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -322,3 +327,331 @@ def test_citations():
     context_block = build_context_block(chunks, citations)
     assert "[SOURCE 1] Document: Safety_Guidelines.pdf | Page: 3" in context_block
     assert "[SOURCE 2] Document: HR_Leave_Policy.docx | Page: N/A" in context_block
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Query normalizer (typo tolerance)
+# ═════════════════════════════════════════════════════════════════════════════
+
+import asyncio
+
+import ingestion.bm25_index as _bm25_module
+import retrieval.query_normalizer as _qn
+from retrieval.query_normalizer import _skeleton, correct_typos
+
+
+@pytest.fixture
+def corpus():
+    """
+    Install a synthetic corpus vocabulary.
+
+    Bumps the vocabulary epoch so the normalizer rebuilds its lookup index, which
+    is the same path an ingestion takes in production.
+    """
+    original_vocabulary = _bm25_module._vocabulary
+    original_epoch = _bm25_module._vocabulary_epoch
+    original_dictionary = _qn._known_words_cache
+
+    # Empty English dictionary by default: it keeps these tests off the reranker
+    # model (which would otherwise be loaded just to read its tokenizer) and
+    # lets each test exercise the one guard it is about. The dictionary guard
+    # has its own test below, which sets this explicitly.
+    _qn._known_words_cache = frozenset()
+
+    def _set(words):
+        _bm25_module._vocabulary = frozenset(words)
+        _bm25_module._vocabulary_epoch += 1
+
+    yield _set
+
+    _bm25_module._vocabulary = original_vocabulary
+    _bm25_module._vocabulary_epoch = original_epoch + 1
+    _qn._known_words_cache = original_dictionary
+
+
+def test_typo_correction_uses_corpus_words(corpus):
+    corpus({"which", "agents", "sit", "behind", "the", "orchestrator"})
+    result = correct_typos("which agnets sit behnd the orchestratr")
+
+    assert result.text == "which agents sit behind the orchestrator"
+    assert set(result.as_log_value()) == {
+        "agnets→agents", "behnd→behind", "orchestratr→orchestrator"
+    }
+
+
+def test_typo_correction_follows_the_current_corpus(corpus):
+    """
+    The guarantee that matters when new documents are uploaded: corrections come
+    from whatever is ingested now, never from a list baked into the code. The
+    same misspelling must be corrected against one corpus and left alone against
+    another that does not contain the word.
+    """
+    corpus({"depreciation", "machinery", "rate"})
+    assert "depreciation" in correct_typos("what is the depriciation rate").text
+
+    corpus({"orchestrator", "agents", "rate"})
+    unchanged = correct_typos("what is the depriciation rate")
+    assert unchanged.text == "what is the depriciation rate"
+    assert "depriciation" in unchanged.unresolved
+
+
+def test_typo_correction_leaves_general_questions_alone(corpus):
+    """
+    Punctuation and digits must survive untouched. Rebuilding the query by
+    joining tokens dropped the "+" from "what is 2 + 2", and the resulting
+    "what is 2 2" scored above the routing floor — a general question routed
+    into a document set that says nothing about it.
+    """
+    corpus({"minio", "stored", "what", "documents"})
+    assert correct_typos("what is 2 + 2").text == "what is 2 + 2"
+    assert correct_typos("hi").text == "hi"
+
+
+def test_typo_correction_preserves_surrounding_characters(corpus):
+    corpus({"minio", "what", "is", "stored"})
+    result = correct_typos("what is stored in MinlO?")
+
+    assert result.text == "what is stored in Minio?"
+    assert result.text.endswith("?")
+
+
+def test_typo_correction_skips_tokens_below_minimum_length(corpus):
+    corpus({"the", "stock"})
+    # "hte" is three characters — too short to correct safely, since almost
+    # everything is within one edit of it.
+    assert correct_typos("hte stock").text == "hte stock"
+
+
+def test_typo_correction_rejects_inflections(corpus):
+    """
+    A candidate differing only by a grammatical ending is not a correction.
+    Observed over-correction: "write" became "writes" purely because the corpus
+    happened to contain the plural.
+    """
+    corpus({"writes", "function"})
+    assert correct_typos("write a function").text == "write a function"
+
+
+def test_typo_correction_phonetic_layer(corpus):
+    """Sound-alike misspellings too far off for edit distance."""
+    corpus({"depreciation", "what"})
+    result = correct_typos("what is diprisiation")
+
+    assert result.text == "what is depreciation"
+    assert [c.method for c in result.corrections] == ["phonetic"]
+
+
+def test_typo_correction_protects_ordinary_english_words(corpus):
+    """
+    A word the documents do not use is not automatically a misspelling. With a
+    small corpus most ordinary words are absent, and correcting them turned
+    "tell me a joke" into "well me a joke" — two real words one edit apart,
+    where the corpus happened to contain only the wrong one.
+    """
+    corpus({"well", "look", "live"})
+    _qn._known_words_cache = frozenset({"tell", "book", "give"})
+
+    assert correct_typos("tell me about the book").text == "tell me about the book"
+    assert correct_typos("give me tips").text == "give me tips"
+
+    # A genuine misspelling is still corrected — the guard protects real words,
+    # it does not switch correction off.
+    corpus({"orchestrator", "well"})
+    assert correct_typos("the orchestratr").text == "the orchestrator"
+
+
+def test_typo_correction_no_corpus_is_a_no_op(corpus):
+    corpus(set())
+    assert correct_typos("which agnets sit behnd").text == "which agnets sit behnd"
+
+
+def test_typo_correction_can_be_disabled(corpus, monkeypatch):
+    corpus({"agents"})
+    monkeypatch.setattr(_qn.settings, "typo_correction_enabled", False)
+    assert correct_typos("agnets").text == "agnets"
+
+
+@pytest.mark.parametrize("a,b", [
+    ("depreciation", "diprisiation"),
+    ("committee", "comittee"),
+    ("photograph", "fotograf"),
+])
+def test_skeleton_collapses_sound_alike_spellings(a, b):
+    assert _skeleton(a) == _skeleton(b)
+
+
+def test_skeleton_separates_unrelated_words():
+    assert _skeleton("invoice") != _skeleton("inventory")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Enterprise adapter coverage contract
+# ═════════════════════════════════════════════════════════════════════════════
+
+from agents.enterprise_agent_interface import (
+    COVERAGE_THRESHOLD,
+    Coverage,
+    CRMAgentStub,
+    ERPAgentStub,
+    HRMSAgentStub,
+    QuestionKind,
+    UserContext,
+)
+
+
+def _ctx():
+    return UserContext(
+        user_id="u", username="suraj.p", department=None,
+        designation=None, session_id="s",
+    )
+
+
+def test_coverage_score_must_be_a_probability():
+    with pytest.raises(ValueError):
+        Coverage(score=1.5, reason="out of range")
+    with pytest.raises(ValueError):
+        Coverage(score=-0.1, reason="out of range")
+
+
+def test_erp_assessment_ranks_identifier_above_topic():
+    """
+    The case Dhruv raised: the same topic word appears in a question the ERP
+    owns and a question the documents own, so the topic cannot decide it. What
+    decides it is whether the question asks for a live value or for what is
+    written down.
+    """
+    erp = ERPAgentStub()
+
+    # Real Sparkline document number — prefix, financial year and serial run
+    # together with no separator.
+    named = asyncio.run(erp.assess("what is the status of SL3012627000486", _ctx()))
+    assert named.score == 1.0
+    assert named.entities == ("SL3012627000486",)
+
+    records = asyncio.run(erp.assess("how many purchase orders were raised last month", _ctx()))
+    assert records.score >= COVERAGE_THRESHOLD
+
+    written = asyncio.run(erp.assess("what is our invoice approval process", _ctx()))
+    assert written.score < COVERAGE_THRESHOLD
+    assert written.question_kind is QuestionKind.POLICY_OR_DEFINITION
+
+
+@pytest.mark.parametrize("code", [
+    "SL3012627000486",   # sales invoice
+    "SRAMD2627000017",   # sales return amendment — must not be read as "SR"
+    "SODCR2425000131",   # sales order
+    "PO2032526000003",   # purchase order
+    "HSS202627000001",   # high seas sales
+    "11016101F0045",     # GL account with an embedded party code
+])
+def test_erp_recognises_real_identifier_formats(code):
+    coverage = asyncio.run(ERPAgentStub().assess(f"show me {code}", _ctx()))
+    assert coverage.score == 1.0, code
+    assert coverage.entities == (code,), code
+
+
+def test_erp_declines_its_declared_gaps():
+    """
+    Subjects the ERP integration cannot answer at all. Claiming one and then
+    failing is worse than never claiming it — and answering it approximately,
+    from a document that merely describes how stock is managed, is worse again.
+    """
+    erp = ERPAgentStub()
+    for query in (
+        "how much stock do we have on hand",
+        "what is the outstanding receivable for S0226",
+        "show me the bill of materials",
+        "what is the TDS deducted",
+    ):
+        coverage = asyncio.run(erp.assess(query, _ctx()))
+        assert coverage.score == 0.0, query
+
+
+def test_unbuilt_adapters_decline_everything():
+    """An adapter with no system behind it must never claim a question."""
+    for adapter in (CRMAgentStub(), HRMSAgentStub()):
+        coverage = asyncio.run(adapter.assess("how many leaves do I have", _ctx()))
+        assert coverage.score == 0.0
+        assert not asyncio.run(adapter.can_handle("anything at all", _ctx()))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Document formats
+# ═════════════════════════════════════════════════════════════════════════════
+
+from ingestion.parsers.excel_parser import _looks_like_legacy_xls, parse_excel
+
+_OLE2 = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"  # pre-2007 .xls signature
+
+
+def test_legacy_xls_is_detected_by_content_not_extension():
+    assert _looks_like_legacy_xls(_OLE2 + b"\x00" * 64)
+    assert not _looks_like_legacy_xls(b"PK\x03\x04" + b"\x00" * 64)  # a real .xlsx
+
+
+def test_corrupt_legacy_xls_fails_cleanly():
+    """
+    A .xls that antiword's counterpart xlrd cannot read must raise a ValueError
+    naming the file, not leak a library error or crash the request. openpyxl's
+    own message for these bytes is "File is not a zip file" — true, and
+    meaningless to whoever uploaded it.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        parse_excel(_OLE2 + b"\x00" * 4096, "quarterly_report.xls")
+
+    message = str(excinfo.value)
+    assert "quarterly_report.xls" in message
+    assert "zip" not in message.lower()
+
+
+def test_xlsm_is_an_accepted_upload_format():
+    """Macro-enabled workbooks are how most real business spreadsheets are saved."""
+    from gateway.routes.ingest import ALLOWED_EXTENSIONS
+    assert ".xlsm" in ALLOWED_EXTENSIONS
+    assert ".xlsx" in ALLOWED_EXTENSIONS
+    assert ".docx" in ALLOWED_EXTENSIONS
+    assert ".pdf" in ALLOWED_EXTENSIONS
+
+
+def _chunk(page, index):
+    return TextChunk(text=f"page {page} chunk {index}", chunk_index=index,
+                     page_number=page, token_count=10, source_block_indices=[index])
+
+
+def test_small_documents_are_never_capped():
+    from ingestion.pipeline import _cap_chunks
+    chunks = [_chunk(p, i) for p in range(1, 4) for i in range(10)]
+    kept, truncation = _cap_chunks(chunks, budget=1000)
+    assert kept == chunks
+    assert truncation is None
+
+
+def test_oversized_documents_keep_every_sheet_represented():
+    """
+    A 20-sheet workbook truncated by taking the first N chunks would lose the
+    last dozen sheets entirely, and a question about December would silently
+    return nothing. Truncation is spread so every sheet stays searchable.
+    """
+    from ingestion.pipeline import _cap_chunks
+    chunks = [_chunk(sheet, i) for sheet in range(1, 21) for i in range(500)]
+    kept, truncation = _cap_chunks(chunks, budget=1000)
+
+    assert len(kept) == 1000
+    assert truncation["chunks_produced"] == 10000
+    assert truncation["chunks_indexed"] == 1000
+    assert truncation["pages_or_sheets"] == 20
+
+    # Every sheet present, none favoured over another.
+    per_sheet = {}
+    for c in kept:
+        per_sheet[c.page_number] = per_sheet.get(c.page_number, 0) + 1
+    assert sorted(per_sheet) == list(range(1, 21))
+    assert set(per_sheet.values()) == {50}
+
+
+def test_truncation_message_tells_the_uploader_what_happened():
+    from ingestion.pipeline import _cap_chunks
+    chunks = [_chunk(p, i) for p in range(1, 6) for i in range(400)]
+    _, truncation = _cap_chunks(chunks, budget=100)
+    assert "2,000 sections" in truncation["message"]
+    assert "summary sheet" in truncation["message"]
