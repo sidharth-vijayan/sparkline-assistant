@@ -45,6 +45,18 @@ _bm25: Optional[BM25Okapi] = None
 _chunk_ids: list[str] = []      # Parallel list: _chunk_ids[i] → _bm25 corpus[i]
 _chunk_texts: list[str] = []
 
+# Every distinct token in the active corpus. This is the single source of truth
+# for "words the documents actually contain", used by typo correction to decide
+# what a misspelling could plausibly have meant. Kept here rather than in a
+# second structure elsewhere so it can never drift from the index it describes.
+_vocabulary: frozenset[str] = frozenset()
+
+# Bumped on every rebuild or reload. Consumers that derive their own structures
+# from the vocabulary (phonetic keys, length buckets) key their caches on this,
+# so an ingestion invalidates them automatically instead of serving corrections
+# against the previous document set.
+_vocabulary_epoch: int = 0
+
 
 # Bumped whenever _tokenize changes. A persisted index tokenized by an older
 # rule cannot be queried with a newer one — the tokens simply won't line up —
@@ -75,7 +87,7 @@ async def build_index(db: AsyncSession) -> None:
       - Once at application startup
       - After each new document ingestion
     """
-    global _bm25, _chunk_ids, _chunk_texts
+    global _bm25, _chunk_ids, _chunk_texts, _vocabulary, _vocabulary_epoch
 
     # Load all chunks belonging to active document versions
     result = await db.execute(
@@ -91,6 +103,8 @@ async def build_index(db: AsyncSession) -> None:
         _bm25 = None
         _chunk_ids = []
         _chunk_texts = []
+        _vocabulary = frozenset()
+        _vocabulary_epoch += 1
         return
 
     _chunk_ids = [str(row.qdrant_point_id) for row in rows]
@@ -98,7 +112,13 @@ async def build_index(db: AsyncSession) -> None:
     tokenized = [_tokenize(text) for text in _chunk_texts]
 
     _bm25 = BM25Okapi(tokenized)
-    logger.info("bm25.build.complete", corpus_size=len(_chunk_ids))
+    _vocabulary = frozenset(token for tokens in tokenized for token in tokens)
+    _vocabulary_epoch += 1
+    logger.info(
+        "bm25.build.complete",
+        corpus_size=len(_chunk_ids),
+        vocabulary_size=len(_vocabulary),
+    )
 
     # Persist to disk for faster restarts
     _INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +129,7 @@ async def build_index(db: AsyncSession) -> None:
                 "chunk_texts": _chunk_texts,
                 "bm25": _bm25,
                 "tokenizer_version": _TOKENIZER_VERSION,
+                "vocabulary": _vocabulary,
             },
             f,
         )
@@ -121,7 +142,7 @@ def load_index_from_disk() -> bool:
 
     Returns True if successfully loaded, False if not found or corrupt.
     """
-    global _bm25, _chunk_ids, _chunk_texts
+    global _bm25, _chunk_ids, _chunk_texts, _vocabulary, _vocabulary_epoch
 
     if not _INDEX_PATH.exists():
         return False
@@ -141,7 +162,24 @@ def load_index_from_disk() -> bool:
         _bm25 = data["bm25"]
         _chunk_ids = data["chunk_ids"]
         _chunk_texts = data["chunk_texts"]
-        logger.info("bm25.loaded_from_disk", corpus_size=len(_chunk_ids))
+
+        # Indexes written before the vocabulary was persisted are still valid —
+        # recover it from the chunk texts rather than forcing a full rebuild.
+        stored_vocabulary = data.get("vocabulary")
+        if stored_vocabulary is None:
+            _vocabulary = frozenset(
+                token for text in _chunk_texts for token in _tokenize(text)
+            )
+            logger.info("bm25.vocabulary_derived", vocabulary_size=len(_vocabulary))
+        else:
+            _vocabulary = frozenset(stored_vocabulary)
+
+        _vocabulary_epoch += 1
+        logger.info(
+            "bm25.loaded_from_disk",
+            corpus_size=len(_chunk_ids),
+            vocabulary_size=len(_vocabulary),
+        )
         return True
     except Exception as e:
         logger.error("bm25.load_failed", error=str(e))
@@ -179,6 +217,28 @@ def search(query: str, top_k: int = 20) -> list[dict]:
 def get_index_size() -> int:
     """Return the number of documents in the current BM25 index."""
     return len(_chunk_ids)
+
+
+def get_vocabulary() -> frozenset[str]:
+    """
+    Every distinct token in the currently active corpus.
+
+    This follows the documents: ingest a new file and the next rebuild picks up
+    its words automatically. Nothing downstream should ever keep its own list of
+    known terms — that is how a system ends up only understanding the documents
+    it was developed against.
+    """
+    return _vocabulary
+
+
+def get_vocabulary_epoch() -> int:
+    """
+    Counter identifying the current vocabulary. Changes on every rebuild.
+
+    Consumers that precompute structures over the vocabulary should cache
+    against this value so an ingestion invalidates them.
+    """
+    return _vocabulary_epoch
 
 
 async def count_active_chunks(db: AsyncSession) -> int:
