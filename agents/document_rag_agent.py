@@ -19,6 +19,7 @@ Returns a structured response with the answer and citations.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import structlog
@@ -29,14 +30,33 @@ from access_control.intent_classifier import QueryIntent
 from access_control.pdp import PDPDecision, PDPResult, UserAttributes, evaluate as pdp_evaluate
 from access_control.pep import build_qdrant_filter
 from agents.tool_executor import ToolExecutor
+from config.settings import get_settings
 from db.models import User
 from retrieval.citation_builder import Citation, build_citations, build_context_block
 from retrieval.hybrid_retrieval import hybrid_search
+from retrieval.query_normalizer import correct_typos
 from retrieval.reranker import rerank
 from services.llm_client import chat_completion, extract_text_response, extract_tool_calls
 from services.redis_service import append_message, get_history
 
 logger = structlog.get_logger(__name__)
+settings = get_settings()
+
+# Asks for the question restated in the corpus's own terms. Deliberately narrow:
+# the model is told to return the question unchanged when unsure, because the
+# expensive mistake here is confidently rewriting a domain term it does not know
+# ("BOQ", "Field Circle") into an ordinary English word that retrieves nothing.
+QUERY_REWRITE_PROMPT = """You rewrite search queries for a document search system.
+
+The user's question found no matching documents. Rewrite it so it is more likely
+to match, correcting misspellings and using clearer wording for the same meaning.
+
+Rules:
+1. Preserve the meaning exactly. Never answer the question.
+2. Keep any term that looks like a company-specific name, code or abbreviation
+   exactly as written, even if it looks misspelled.
+3. If you are not confident the rewrite is better, repeat the question unchanged.
+4. Reply with the rewritten question only — no explanation, no quotes."""
 
 RAG_SYSTEM_PROMPT = """You are Sparkline AI, an in-house enterprise assistant for Sparkline,
 a construction and equipment company. You answer questions based ONLY on the provided source
@@ -92,6 +112,19 @@ class RetrievalResult:
     denied: bool = False
     error: str | None = None
 
+    # The query these chunks were actually found with, when it differs from what
+    # the user typed — i.e. after typo correction. The answering half needs this:
+    # a badly misspelled word retrieves the right passages but leaves the model
+    # holding a question it cannot read. Asked "what is diprisiation" over
+    # depreciation passages, it answered that it could not find anything, and the
+    # general-knowledge fallback then invented a definition for a word that does
+    # not exist. None when the user's words were used unchanged.
+    effective_query: str | None = None
+
+    # Human-readable "before→after" list of the substitutions made, for logging
+    # and for telling the user how their question was read.
+    corrections: tuple[str, ...] = ()
+
     @property
     def has_evidence(self) -> bool:
         return bool(self.chunks) and self.top_score is not None
@@ -146,20 +179,84 @@ class DocumentRAGAgent:
         # ── Step 3: PEP → Qdrant filter ───────────────────────────
         qdrant_filter = build_qdrant_filter(pdp_result)
 
-        # ── Step 4: Hybrid retrieval ──────────────────────────────
-        raw_chunks = hybrid_search(query=search_text, qdrant_filter=qdrant_filter)
-        log.info("rag_agent.retrieval", chunk_count=len(raw_chunks))
+        # ── Step 3b: Typo correction ──────────────────────────────
+        normalized = correct_typos(search_text)
+        if normalized.changed:
+            log.info(
+                "rag_agent.typo_corrected",
+                corrections=normalized.as_log_value(),
+                unresolved=list(normalized.unresolved),
+            )
 
-        if not raw_chunks:
+        # The prompt gets its own correction of the user's own words. For a
+        # condensed follow-up, search_text carries the previous question too, and
+        # that must never reach the prompt — condensing is a retrieval device
+        # only. Corrections, unlike condensing, do have to reach the prompt: a
+        # word mangled badly enough leaves the model unable to read the question
+        # it is being asked, even with the right passages in front of it.
+        prompt_normalized = (
+            normalized if search_text == query else correct_typos(query)
+        )
+        effective_query = prompt_normalized.text if prompt_normalized.changed else None
+
+        # ── Steps 4-5: Hybrid retrieval + reranking ───────────────
+        reranked = self._retrieve_and_rerank(normalized.text, qdrant_filter)
+        top_score = self._top_score(reranked)
+        log.info(
+            "rag_agent.reranked", final_count=len(reranked), top_score=top_score
+        )
+
+        # Safety net: a correction must never leave a query worse off than the
+        # words the user typed. If the corrected query lands below the routing
+        # floor it was about to be sent to general knowledge anyway, so there is
+        # nothing to lose by re-running the original and keeping whichever
+        # scored higher. Bounded cost — this only ever fires on queries that
+        # have already failed.
+        if normalized.changed and (
+            top_score is None or top_score < settings.router_rag_score_low
+        ):
+            original = self._retrieve_and_rerank(search_text, qdrant_filter)
+            original_score = self._top_score(original)
+            if original_score is not None and (
+                top_score is None or original_score > top_score
+            ):
+                log.info(
+                    "rag_agent.typo_correction_discarded",
+                    corrected_score=top_score,
+                    original_score=original_score,
+                )
+                reranked, top_score = original, original_score
+                # These chunks came from the user's own words, so the prompt
+                # must go back to them too.
+                effective_query = None
+
+        # ── Step 5b: Optional semantic rewrite (tier 3) ───────────
+        if self._should_rewrite(normalized, top_score):
+            rewritten = await self._semantic_rewrite(search_text, log)
+            if rewritten:
+                candidate = self._retrieve_and_rerank(rewritten, qdrant_filter)
+                candidate_score = self._top_score(candidate)
+                if candidate_score is not None and (
+                    top_score is None or candidate_score > top_score
+                ):
+                    log.info(
+                        "rag_agent.semantic_rewrite_used",
+                        rewritten=rewritten,
+                        before=top_score,
+                        after=candidate_score,
+                    )
+                    reranked, top_score = candidate, candidate_score
+                    # Same restriction as above: a rewrite of a condensed
+                    # follow-up carries the previous question and must not
+                    # become the question the model is asked.
+                    if search_text == query:
+                        effective_query = rewritten
+
+        if not reranked:
             return RetrievalResult(
                 chunks=[], citations=[], context_block="",
                 pdp_decision=pdp_result.decision.value,
             )
-
-        # ── Step 5: Reranking ─────────────────────────────────────
-        reranked = rerank(query=search_text, candidates=raw_chunks)
-        top_score = reranked[0]["rerank_score"] if reranked else None
-        log.info("rag_agent.reranked", final_count=len(reranked), top_score=top_score)
 
         # ── Step 6: Citations ─────────────────────────────────────
         citations: list[Citation] = build_citations(reranked)
@@ -171,7 +268,80 @@ class DocumentRAGAgent:
             context_block=context_block,
             pdp_decision=pdp_result.decision.value,
             top_score=top_score,
+            effective_query=effective_query,
+            corrections=tuple(prompt_normalized.as_log_value())
+            if prompt_normalized.changed
+            else (),
         )
+
+    # ── Retrieval helpers ────────────────────────────────────────────
+
+    @staticmethod
+    def _retrieve_and_rerank(search_text: str, qdrant_filter) -> list[dict]:
+        """One retrieval pass: hybrid search then cross-encoder rerank."""
+        raw_chunks = hybrid_search(query=search_text, qdrant_filter=qdrant_filter)
+        if not raw_chunks:
+            return []
+        return rerank(query=search_text, candidates=raw_chunks)
+
+    @staticmethod
+    def _top_score(reranked: list[dict]) -> float | None:
+        return reranked[0]["rerank_score"] if reranked else None
+
+    @staticmethod
+    def _should_rewrite(normalized, top_score: float | None) -> bool:
+        """
+        Whether the semantic tier is worth a GPU round-trip.
+
+        Three conditions, all required. The feature must be on; retrieval must
+        actually have failed, so a working query is never delayed; and the query
+        must still contain words the corpus does not know, since a query made
+        entirely of corpus words has no misunderstanding left for a rewrite to
+        resolve — it is simply a question the documents do not answer.
+        """
+        if not settings.typo_semantic_rewrite_enabled:
+            return False
+        if top_score is not None and top_score >= settings.router_rag_score_low:
+            return False
+        return bool(normalized.unresolved)
+
+    @staticmethod
+    async def _semantic_rewrite(query: str, log) -> str | None:
+        """
+        Ask the LLM to restate a failing query. Returns None on any problem.
+
+        Never allowed to break a request: a timeout, a refusal or a malformed
+        reply all fall back to the query we already have.
+        """
+        try:
+            completion = await asyncio.wait_for(
+                chat_completion(
+                    messages=[
+                        {"role": "system", "content": QUERY_REWRITE_PROMPT},
+                        {"role": "user", "content": query},
+                    ],
+                    temperature=0.0,
+                    max_tokens=100,
+                ),
+                timeout=settings.typo_semantic_rewrite_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            log.warning("rag_agent.semantic_rewrite_timeout")
+            return None
+        except Exception as e:
+            log.warning("rag_agent.semantic_rewrite_failed", error=str(e))
+            return None
+
+        rewritten = extract_text_response(completion).strip().strip('"').strip()
+
+        # A rewrite that is empty, unchanged, or wildly longer than the question
+        # is not a rewrite — the model has explained itself instead of complying.
+        if not rewritten or rewritten.lower() == query.lower():
+            return None
+        if len(rewritten) > max(120, len(query) * 3):
+            log.warning("rag_agent.semantic_rewrite_rejected", length=len(rewritten))
+            return None
+        return rewritten
 
     async def answer(
         self,
@@ -198,9 +368,20 @@ class DocumentRAGAgent:
 
         # ── Step 7: Build prompt + LLM call ─────────────────────
         history = await get_history(session_id, max_turns=6)
+
+        # Ask the question in its corrected form when retrieval had to correct it
+        # to find anything. The passages and the question then agree with each
+        # other; otherwise the model is shown the right sources for a question it
+        # cannot parse, refuses, and the fallback answers from general knowledge
+        # instead — which for an invented word means inventing a meaning for it.
+        # The user's own words are still what gets recorded in the history below.
+        question = retrieval.effective_query or query
+        if retrieval.effective_query:
+            log = log.bind(read_as=retrieval.effective_query)
+
         user_message = RAG_USER_TEMPLATE.format(
             context_block=retrieval.context_block,
-            question=query,
+            question=question,
         )
 
         system_prompt = BLENDED_SYSTEM_PROMPT if blended else RAG_SYSTEM_PROMPT
