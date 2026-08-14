@@ -123,4 +123,10 @@ ROUTING_FIX_PLAN.md
 
 # internship-tracking/ is now tracked deliberately, so the roadmaps, task log,
 # logbook feed and metric tracker can be pulled and edited from another machine.
+#
+# This is temporary, at Sidharth's request (2026-08-14). To revoke it, restore
+# the line `internship-tracking/` here, then run
+#   git rm -r --cached internship-tracking/
+# and commit. Every newly tracked document lives under that one directory so the
+# revoke stays a one-line change — keep it that way when adding more.
 
