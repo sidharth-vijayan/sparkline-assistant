@@ -33,11 +33,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.settings import get_settings
 from db.models import Chunk, Document, DocumentVersion
-from ingestion.chunker import chunk_docx_blocks, chunk_excel_sheets, chunk_pdf_pages, TextChunk
+from ingestion.chunker import (
+    chunk_docx_blocks,
+    chunk_excel_sheets,
+    chunk_pdf_pages,
+    chunk_text,
+    TextChunk,
+)
 from ingestion.parsers.docx_parser import parse_docx
 from ingestion.parsers.excel_parser import parse_excel
 from ingestion.parsers.ocr_parser import ocr_pdf_page
 from ingestion.parsers.pdf_parser import parse_pdf
+from ingestion.parsers.text_parser import parse_csv, parse_text
 from services.minio_service import upload_document
 
 logger = structlog.get_logger(__name__)
@@ -55,6 +62,9 @@ class IngestionPipeline:
 
     def __init__(self, db: AsyncSession):
         self.db = db
+        # Set by ingest() when a document was too large to index in full, so the
+        # route can tell the uploader instead of silently indexing part of it.
+        self.last_truncation: Optional[dict] = None
 
     async def ingest(
         self,
@@ -83,6 +93,17 @@ class IngestionPipeline:
 
         if not chunks:
             raise ValueError(f"No content could be extracted from '{original_filename}'")
+
+        # ── Step 1b: Cap how much of one file may enter the index ──
+        chunks, self.last_truncation = _cap_chunks(
+            chunks, settings.ingest_max_chunks_per_document
+        )
+        if self.last_truncation:
+            log.warning(
+                "ingestion.truncated",
+                kept=self.last_truncation["chunks_indexed"],
+                produced=self.last_truncation["chunks_produced"],
+            )
 
         # ── Step 2: MinIO upload ───────────────────────────────────
         doc_id = uuid.uuid4()
@@ -201,14 +222,26 @@ class IngestionPipeline:
             blocks = parse_docx(file_bytes, filename)
             return chunk_docx_blocks(blocks)
 
-        elif suffix in (".xls", ".xlsx"):
+        elif suffix in (".xls", ".xlsx", ".xlsm"):
             sheets = parse_excel(file_bytes, filename)
             return chunk_excel_sheets(sheets)
+
+        elif suffix in (".csv", ".tsv"):
+            parsed = parse_csv(file_bytes, filename)
+            if not parsed.text.strip():
+                raise ValueError(f"'{filename}' contains no readable rows")
+            return chunk_text(parsed.text, page_number=1)
+
+        elif suffix in (".txt", ".md", ".log"):
+            parsed = parse_text(file_bytes, filename)
+            if not parsed.text.strip():
+                raise ValueError(f"'{filename}' is empty")
+            return chunk_text(parsed.text, page_number=1)
 
         else:
             raise ValueError(
                 f"Unsupported file type: '{suffix}'. "
-                "Supported: .pdf, .docx, .doc, .xlsx, .xls"
+                "Supported: .pdf, .docx, .doc, .xlsx, .xlsm, .xls, .csv, .txt, .md"
             )
 
     async def _find_existing_document(self, filename: str) -> Optional[Document]:
@@ -219,12 +252,84 @@ class IngestionPipeline:
         return result.scalar_one_or_none()
 
 
+def _cap_chunks(
+    chunks: list[TextChunk], budget: int
+) -> tuple[list[TextChunk], Optional[dict]]:
+    """
+    Limit how many chunks one document contributes to the index.
+
+    Embedding runs on CPU at roughly three 400-token chunks per second, so cost
+    scales with chunk count, not file size. A 17 MB Word report of mostly photos
+    produces ~600 chunks and indexes in a couple of minutes; a 5 MB spreadsheet
+    of 120,000 transaction rows produces ~10,800 and would take about an hour,
+    during which the upload looks like it has hung.
+
+    Beyond the cost, indexing ten thousand near-identical transaction rows is
+    actively bad for retrieval: they crowd out the genuine documents in every
+    search, and no user was ever going to ask about row 45,231 by name.
+
+    Truncation is spread proportionally across pages or sheets rather than
+    taking the first N chunks, so that every sheet of a workbook stays
+    represented instead of the last dozen vanishing entirely. The caller
+    surfaces the returned summary to whoever uploaded the file — a silently
+    half-indexed document is worse than a slow one.
+    """
+    if len(chunks) <= budget:
+        return chunks, None
+
+    produced = len(chunks)
+
+    # Preserve document order while grouping by page (sheet index for Excel).
+    groups: dict[int, list[TextChunk]] = {}
+    for chunk in chunks:
+        groups.setdefault(chunk.page_number, []).append(chunk)
+
+    per_group = max(1, budget // len(groups))
+    kept: list[TextChunk] = []
+    for page in sorted(groups):
+        kept.extend(groups[page][:per_group])
+
+    # Spend any leftover budget on the earliest pages, which tend to carry
+    # headers, totals and summaries.
+    if len(kept) < budget:
+        kept_ids = {id(c) for c in kept}
+        for page in sorted(groups):
+            for chunk in groups[page]:
+                if len(kept) >= budget:
+                    break
+                if id(chunk) not in kept_ids:
+                    kept.append(chunk)
+                    kept_ids.add(id(chunk))
+            if len(kept) >= budget:
+                break
+
+    kept.sort(key=lambda c: (c.page_number, c.chunk_index))
+    return kept, {
+        "chunks_produced": produced,
+        "chunks_indexed": len(kept),
+        "pages_or_sheets": len(groups),
+        "message": (
+            f"This file produced {produced:,} sections, more than the {budget:,} "
+            f"indexed per document. The first {per_group} section(s) of each of its "
+            f"{len(groups)} page(s)/sheet(s) were indexed so every part stays "
+            "searchable. For very large transactional spreadsheets, uploading a "
+            "summary sheet gives better answers than the full row-level export."
+        ),
+    }
+
+
 def _mime_for_suffix(suffix: str) -> str:
     _map = {
         ".pdf": "application/pdf",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         ".doc": "application/msword",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
         ".xls": "application/vnd.ms-excel",
+        ".csv": "text/csv",
+        ".tsv": "text/tab-separated-values",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+        ".log": "text/plain",
     }
     return _map.get(suffix, "application/octet-stream")
