@@ -1,6 +1,6 @@
 # Pilot 1 — System Baseline
 
-**Snapshot taken:** 2026-08-14, at the pilot 1 release to 6 testers
+**Snapshot taken:** 2026-08-14. The figures below were measured on that date; the release to the 6 testers was subsequently moved to the week of 2026-08-17, so this is the state the system was in immediately *before* pilot 1 rather than on its first day of use. The measured values are unchanged.
 **Repository state:** `main` @ `baef833`, 137 commits, first commit 2026-07-23
 **Host:** SEPL-PC
 
