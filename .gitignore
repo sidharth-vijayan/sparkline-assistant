@@ -124,7 +124,3 @@ internship-tracking/
 INTERNSHIP_LOGBOOK_CONTENT.md
 ROUTING_FIX_PLAN.md
 
-# Administrator guide — contains the admin credentials, which must not be
-# committed. The tester handbook in docs/ is tracked; this one is not.
-Sparkline_Admin_Guide.docx
-docs/Sparkline_Admin_Guide.docx
