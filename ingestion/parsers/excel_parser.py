@@ -63,6 +63,86 @@ class SheetContent:
         return "\n".join(lines)
 
 
+# Every pre-2007 .xls file begins with this OLE2 compound-document signature.
+# Checking the bytes rather than the file extension means a mislabelled upload is
+# still diagnosed correctly.
+_OLE2_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def _looks_like_legacy_xls(file_bytes: bytes) -> bool:
+    """True if these bytes are an old-format .xls rather than an .xlsx."""
+    return file_bytes[:8] == _OLE2_SIGNATURE
+
+
+def _parse_legacy_xls(file_bytes: bytes, filename: str) -> list[SheetContent]:
+    """
+    Read a pre-2007 .xls workbook via xlrd.
+
+    Kept behind openpyxl rather than dispatched on the file extension, because
+    files are routinely misnamed — a .xls that is really an .xlsx is common
+    enough that trusting the extension would reject valid uploads.
+
+    xlrd 2.x reads .xls only (its .xlsx support was removed), which is exactly
+    the split we want: openpyxl for the modern package format, xlrd for the
+    binary one.
+    """
+    try:
+        import xlrd
+    except ImportError as e:
+        raise ValueError(
+            f"'{filename}' is in the older Excel format (.xls), and the reader for "
+            "it is not installed. Please re-save the file as .xlsx and upload again."
+        ) from e
+
+    try:
+        book = xlrd.open_workbook(file_contents=file_bytes)
+    except Exception as e:
+        raise ValueError(f"Failed to open Excel file '{filename}': {e}") from e
+
+    def _cell(value: Any, ctype: int, datemode: int) -> Any:
+        # xlrd reports dates as floats with a separate type flag; without this
+        # every date in the sheet reads as a five-digit number.
+        if ctype == xlrd.XL_CELL_DATE:
+            try:
+                return xlrd.xldate.xldate_as_datetime(value, datemode).isoformat(" ")
+            except Exception:
+                return value
+        if ctype == xlrd.XL_CELL_BOOLEAN:
+            return bool(value)
+        if ctype == xlrd.XL_CELL_NUMBER and float(value).is_integer():
+            return int(value)
+        return value
+
+    sheets: list[SheetContent] = []
+    for ws in book.sheets():
+        if ws.nrows == 0:
+            continue
+        rows = [
+            [_cell(ws.cell_value(r, c), ws.cell_type(r, c), book.datemode)
+             for c in range(ws.ncols)]
+            for r in range(min(ws.nrows, MAX_ROWS_PER_SHEET + 1))
+        ]
+        headers = [str(v) if v is not None else "" for v in rows[0]]
+        sheets.append(
+            SheetContent(
+                sheet_name=ws.name,
+                headers=headers,
+                rows=rows[1:],
+                chart_titles=[],
+                row_count=ws.nrows - 1,
+                col_count=ws.ncols,
+            )
+        )
+
+    logger.info(
+        "excel_parser.complete_legacy_xls",
+        filename=filename,
+        total_sheets=len(sheets),
+        total_rows=sum(s.row_count for s in sheets),
+    )
+    return sheets
+
+
 def parse_excel(
     file_bytes: bytes,
     filename: str = "document.xlsx",
@@ -70,6 +150,8 @@ def parse_excel(
 ) -> list[SheetContent]:
     """
     Parse an .xlsx file from raw bytes.
+
+    Note this handles the modern .xlsx format only. See _looks_like_legacy_xls.
 
     Args:
         data_only: If True, reads computed cell values rather than formulas.
@@ -83,6 +165,10 @@ def parse_excel(
             read_only=False,  # read_only=True breaks chart access
         )
     except Exception as e:
+        # openpyxl reads the modern .xlsx/.xlsm package format only. A pre-2007
+        # .xls is an OLE2 binary, which xlrd handles instead.
+        if _looks_like_legacy_xls(file_bytes):
+            return _parse_legacy_xls(file_bytes, filename)
         raise ValueError(f"Failed to open Excel file '{filename}': {e}") from e
 
     sheets: list[SheetContent] = []
