@@ -31,6 +31,10 @@ settings = get_settings()
 _client: QdrantClient | None = None
 
 
+# Qdrant rejects very large delete selectors; delete in batches of this size.
+_DELETE_BATCH = 500
+
+
 def _get_client() -> QdrantClient:
     global _client
     if _client is None:
@@ -185,6 +189,34 @@ def deactivate_version(document_version_id: uuid.UUID) -> None:
         "qdrant.version_deactivated",
         version_id=str(document_version_id),
     )
+
+
+def delete_points(point_ids: list[str]) -> int:
+    """
+    Permanently remove points from the collection.
+
+    Distinct from deactivate_version, which leaves vectors in place and relies on
+    the access filter to hide them — correct for superseded versions, since an
+    older version is still part of the document's history. This is for a
+    document being withdrawn outright, where leaving the vectors behind would
+    keep them retrievable to anyone whose filter did not exclude them.
+
+    Batched because Qdrant rejects very large selector payloads, and a workbook
+    can easily contribute a couple of thousand points.
+    """
+    if not point_ids:
+        return 0
+
+    client = _get_client()
+    for start in range(0, len(point_ids), _DELETE_BATCH):
+        client.delete(
+            collection_name=settings.qdrant_collection_name,
+            points_selector=point_ids[start : start + _DELETE_BATCH],
+            wait=True,
+        )
+
+    logger.info("qdrant.points_deleted", count=len(point_ids))
+    return len(point_ids)
 
 
 def search_dense(
