@@ -20,6 +20,20 @@ services:
       QDRANT_PORT: 6333
       QDRANT_GRPC_PORT: 6334
       LLM_BASE_URL: http://host.docker.internal:11434/v1
+      # Expose the GPU to the embedding and reranking models. The image already
+      # ships a CUDA build of torch; without these two variables the nvidia
+      # runtime maps no devices into the container and torch silently falls back
+      # to CPU, where embedding a large workbook takes about an hour.
+      #
+      # This host runs the nvidia runtime as its default, so no device
+      # reservation block is needed — the variables alone are what grant access.
+      #
+      # VRAM budget on the 16GB card: the embedding model is ~1.3GB and the
+      # reranker ~0.1GB, alongside ~9GB for the LLM served by the host's Ollama.
+      # To hand these models back to the CPU, set EMBEDDING_DEVICE and
+      # RERANKER_DEVICE to 'cpu' in .env — no change is needed here.
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     extra_hosts:
       - "host.docker.internal:host-gateway"
   open-webui:
