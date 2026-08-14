@@ -28,7 +28,26 @@ from services.postgres_service import get_db
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin-ingestion"])
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".xlsx", ".xls"}
+# Formats accepted at upload.
+#
+#   .xlsm            macro-enabled Excel. Macros are ignored; the sheet data
+#                    reads exactly as .xlsx does, and real business spreadsheets
+#                    are very often saved this way.
+#   .doc / .xls      the pre-2007 binary formats, read via antiword and xlrd.
+#                    Text is recovered, but .doc loses headings and tables, so
+#                    re-saving as .docx still gives better answers.
+#   .csv / .tsv      presented in the same tabular shape as a spreadsheet.
+#   .txt / .md / .log  read directly, with encoding detection.
+#
+# Dispatch is by content, not extension: a misnamed file is routed on its actual
+# signature, so a .xlsx someone renamed to .xls still opens.
+ALLOWED_EXTENSIONS = {
+    ".pdf",
+    ".docx", ".doc",
+    ".xlsx", ".xlsm", ".xls",
+    ".csv", ".tsv",
+    ".txt", ".md", ".log",
+}
 MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
@@ -180,7 +199,7 @@ async def ingest_document(
         chunks=len(chunks),
     )
 
-    return {
+    response = {
         "message": "Document ingested successfully",
         "document_id": str(doc.id),
         "version_id": str(version.id),
@@ -191,6 +210,15 @@ async def ingest_document(
         "allowed_departments": dept_list,
         "allowed_designations": desig_list,
     }
+
+    # A file too large to index in full is still ingested, but the uploader has
+    # to be told which parts are searchable. Silently indexing a fraction of a
+    # document is the kind of failure nobody notices until an answer is missing.
+    if pipeline.last_truncation:
+        response["message"] = "Document ingested, but it was too large to index in full"
+        response["truncated"] = pipeline.last_truncation
+
+    return response
 
 
 @router.get("/documents")
