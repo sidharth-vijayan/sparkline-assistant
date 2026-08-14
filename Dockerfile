@@ -17,6 +17,15 @@ RUN pip install --no-cache-dir poetry==1.8.3 && \
     poetry config virtualenvs.create false && \
     poetry install --no-dev --no-interaction --no-root
 
+# Readers for the pre-2007 binary Office formats. Deliberately a separate layer
+# after the dependency install so adding them does not invalidate the cached
+# poetry layer (which pulls torch and takes many minutes to rebuild).
+#   antiword — extracts text from .doc
+#   xlrd     — reads .xls (2.x dropped .xlsx, which openpyxl already handles)
+RUN apt-get update && apt-get install -y --no-install-recommends antiword \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir "xlrd==2.0.1"
+
 # Copy application code
 COPY . .
 
