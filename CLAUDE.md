@@ -242,7 +242,24 @@ Embedding runs on CUDA; the reranker is deliberately on CPU because VRAM is shar
 5. RAGAS baseline (`eval/ragas_runner.py`) — must run *after* the routing change; figures measured
    under the old always-search behaviour are not valid.
 6. Real per-user access restrictions, gated on HR supplying department and designation data.
-7. Tool-calling repair for chart and export generation (`tools/`).
+7. **File export delivery.** Verified 2026-08-18, and the earlier "tool-calling repair" framing was
+   wrong: the model and the generators both work, the *delivery* path is missing. `qwen2.5:14b`
+   emits well-formed tool calls (3 of 4 probes; the miss was a prompt with no data, where asking
+   for it is correct), `tools/export_tool.py` produces valid `.docx`/`.xlsx` that reopen cleanly,
+   and `/v1/chat/completions` returns them base64-encoded in `tool_outputs`.
+   Then it stops. `_format_answer()` in `open_webui_pipeline/sparkline_pipeline.py` takes only
+   `(answer, citations, agent_type)` and never reads `tool_outputs`; no endpoint serves the bytes;
+   nothing is written to MinIO. The file is built, returned over the API, and discarded. The
+   executing DB copy of the pipe was checked too, not just the repo file — neither `tool_outputs`
+   nor `file_base64` appears in it.
+   This is worse than a missing download button, because the model reports success: a tester is
+   told "exported to a Word document ... successfully" and gets no file, no link, and no error.
+   Needs MinIO persistence, an authenticated download endpoint, and a markdown link from the pipe.
+   `tools/chart_tool.py` is **unverified** — the same delivery gap applies to `chart_base64`, and
+   the `tools/sandbox.py` subprocess path was never exercised.
+   Separate defect found in the same run: an export request with poor retrieval
+   ("download the project work split as a spreadsheet", rerank -7.98) produced no tool call *and*
+   answered in Thai. On a weak export hit the model both skips the tool and drifts language.
 8. Enterprise ERP/HRMS routing — gated on Dhruv, deliberately not half-wired. The agreed contract
    and his answers are in `ENTERPRISE_ROUTING_CONTRACT.md`; `agents/enterprise_agent_interface.py`
    is an abstract contract with no implementation.
