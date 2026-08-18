@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # Application code never references the backend directly.
     llm_base_url: str = "http://localhost:11434/v1"
     llm_api_key: str = "ollama"
-    llm_model_name: str = "hf.co/mradermacher/GPT-OSS-20B-i1-GGUF:Q4_K_M"
+    llm_model_name: str = "qwen2.5:14b"
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.1
     llm_timeout_seconds: int = 120

@@ -23,7 +23,7 @@ FastAPI Orchestrator (/v1/chat/completions)
 | Frontend | Open WebUI + custom Pipeline |
 | Orchestrator | FastAPI + plain Python router |
 | LLM Serving | Ollama (dev) → vLLM (prod), OpenAI-compatible |
-| LLM Model | GPT-OSS 20B Q4_K_M |
+| LLM Model | Qwen2.5 14B Instruct Q4_K_M |
 | Embeddings | BAAI/bge-large-en (sentence-transformers) |
 | Vector DB | Qdrant |
 | Keyword Search | BM25 (rank-bm25) |
@@ -84,7 +84,7 @@ This creates all tables and seeds the 10 pilot users with the temporary password
 ### 6. Pull the LLM Model (Week 3+, requires Ollama)
 
 ```bash
-ollama pull hf.co/mradermacher/GPT-OSS-20B-i1-GGUF:Q4_K_M
+ollama pull qwen2.5:14b
 ```
 
 ### 7. Run the API
