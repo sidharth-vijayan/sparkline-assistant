@@ -1,7 +1,7 @@
 # 📊 Sparkline Internship — Resume Impact Tracker
 
 > **Goal:** Capture quantifiable metrics throughout the internship so the final resume bullet points are data-backed and impressive.
-> **Last updated:** 2026-08-14
+> **Last updated:** 2026-08-18
 
 ---
 
@@ -19,7 +19,7 @@
 ### System Architecture & Scale
 - [x] Number of pilot users served: **6 pilot testers provisioned + 1 owner + 1 file admin** (as of 2026-08-13; replaced the 11 seeded placeholder accounts with the real roster. Release to testers moved from 2026-08-14 to the week of 2026-08-17)
 - [x] Number of documents ingested into Qdrant: **2 real documents** (first live ingestion, 2026-08-07)
-- [x] Total chunks stored in vector DB: **93 active chunks** (48 + 45, bge-large-en 1024-dim)
+- [x] Total chunks stored in vector DB: **186 active chunks** (bge-large-en 1024-dim; re-counted 2026-08-18 after the format and truncation work, up from 93)
 - [ ] Qdrant collection size (MB/GB — fill in after larger-scale ingestion)
 - [x] Number of Docker containers in stack: **7** (postgres, redis, minio, qdrant, ollama, api, open-webui) — deployed together for the first time on the production GPU server, 2026-08-07
 
@@ -70,12 +70,20 @@
 - [ ] Uptime / availability target (SLA if defined)
 - [x] Production bugs found & fixed during first live deployment: **4** — (1) a document-visibility access-control bug where a document ingested as "public" was silently invisible to 100% of pilot users; (2) a background-task DB-session lifecycle bug that silently broke the keyword-search (BM25) index after every single document ingestion; (3) a missing Open WebUI Pipe Function on the new server, which would have bypassed access control and retrieval entirely and served ungrounded LLM answers; (4) a response-parsing bug that rendered every browser answer as a sources list with no answer text (2026-08-07)
 - [x] Deployment-blocking issues caught by validating the frontend path separately from the API path: **2 of the 4** — both were invisible at the API level and would only have surfaced live in front of stakeholders
-- [x] LLM backends evaluated under real GPU constraints before production selection: **2** (GPT-OSS 20B, qwen2.5-coder:14b) — rejected the larger model after it returned empty responses despite fitting fully in GPU memory
+- [x] LLM backends evaluated under real GPU constraints before production selection: **3** (GPT-OSS 20B, qwen2.5-coder:14b, qwen2.5:14b) — rejected the largest after it returned empty responses despite fitting fully in GPU memory, then moved off the code-tuned model to the general instruction-tuned one of the same size, since the assistant answers policy and HR prose rather than code (2026-08-18)
 - [x] Additional defects found and fixed during the routing work: **5** — (1) the general-LLM agent was unreachable dead code, so every query including "hi" went through document RAG and was refused whenever the corpus didn't cover it; (2) rank fusion truncated the reranker's candidate pool to the answer size, so the cross-encoder scored 5 of ~40 candidates; (3) BM25 tokenization left punctuation attached, silently dropping keyword search from the hybrid merge for any question ending in "?"; (4) Open WebUI's internal title/tag-generation requests were consuming the full RAG pipeline and leaking into the chat; (5) follow-up detection was length-based, gluing self-contained questions onto unrelated document questions (2026-08-11 → 08-14)
 - [x] Defects caught only by testing the browser path, not the API: **2 of 5** — reinforcing the earlier finding that API-level correctness does not imply a working user experience
 - [x] Additional defects found and fixed during pilot-readiness work: **6** — (1) the chat integration logged in as each user with a password hardcoded in the source, so a user changing their own password silently broke their own chat; (2) typo correction was rewriting ordinary English words absent from the small corpus, turning "tell me a joke" into "well me a joke"; (3) a badly misspelled word retrieved the right passages but the model was shown the raw typo, refused, and the fallback then invented a definition for a word that does not exist; (4) macro-enabled Excel (.xlsm) was not an accepted format at all, despite being how most business spreadsheets are saved; (5) both pre-2007 Office formats were listed as supported while failing on every real file; (6) newly created users could log in but saw no models at all, because a chat-frontend model with no access rule configured is visible to administrators only (2026-08-13 → 08-14)
 - [x] Provisioning steps required per user, discovered the hard way: **3** — a backend account, a chat-frontend account, and an explicit model permission. Completing only the first two leaves a user able to log in and see nothing
 - [x] Bug found in my own fix before release, via the regression suite: **1** — the mixed-conversation case (a general question interleaved into a document conversation) was silently breaking follow-ups
+
+### Security & Operations Hardening (added 2026-08-18)
+- [x] Credentials removed from the source tree: **1 administrator password** that was a literal default in `admin_tools/ingest_cli.py` — and therefore in a public repository, in two documentation files and in the smoke test. The account can ingest and withdraw documents for every user. Rotated, and the CLI now prompts rather than shipping a fallback
+- [x] Secrets rotated across every location that must agree: **2** — the service token lives in `.env`, in the chat frontend's stored pipe configuration and in the running container's baked environment, so rotating it in one place alone silently breaks every chat
+- [x] Services found reachable from the office LAN: **7 of 7** — the container platform publishes ports past the host firewall, so Postgres, Redis, Qdrant, MinIO, the API and the frontend were all answering on the network. The vector store answers **unauthenticated** callers (no API key configured); verified from a second machine rather than assumed
+- [x] Permanent GPU memory reclaimed: **15 GB** by removing the rejected model, plus a resident-model cap converting a second permanent **9 GB** claim into memory held only while in use — necessary because the other model is shared infrastructure another team's tool depends on and cannot be deleted
+- [x] Development moved off remote desktop onto an SSH tunnel: removes a full desktop session from a **7.9 GB** shared machine while keeping all computation server-side
+- [x] Environment defect diagnosed to root cause rather than worked around: torch failed to load on the development laptop with a DLL initialisation error. Eliminated corrupt files (checksums verified against the package manifest), wrong Python ABI, missing dependencies and memory pressure in turn, before tracing it to the machine carrying only the 2019 C++ runtime while the library targets the 2022 one — and fixed it without administrator rights. **75/75** tests then passing locally
 
 ### Collaboration & Integration
 - [ ] Number of shared infrastructure components with Dhruv's enterprise adapters: **2** (PostgreSQL, FastAPI Orchestrator, Ollama)
