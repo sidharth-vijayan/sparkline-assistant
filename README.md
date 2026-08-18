@@ -73,13 +73,17 @@ cp .env.example .env
 # Edit .env with your values (defaults work for local dev)
 ```
 
-### 5. Initialize Database + Seed Pilot Users
+### 5. Initialize Database + Provision Users
 
 ```bash
-python -m db.init_db
+ADMIN_INITIAL_PASSWORD='<choose one>' python -m db.init_db
+python -m db.seed_pilot_users --password '<choose one>' --apply
 ```
 
-This creates all tables and seeds the 10 pilot users with the temporary password `Sparkline@2025`.
+`init_db` creates the tables and the `file.admin` account; it refuses to run
+without `ADMIN_INITIAL_PASSWORD` so no known password is ever shipped. The pilot
+roster lives in `seed_pilot_users.py`, which is idempotent and safe to re-run —
+it will not overwrite a password someone has already changed.
 
 ### 6. Pull the LLM Model (Week 3+, requires Ollama)
 
@@ -317,7 +321,12 @@ All 10 pilot users are pre-seeded by `db/init_db.py`:
 | yojana | Yojana |
 | roshni | Roshni |
 
-**Default password:** `Sparkline@2025` — change on first login.
+**Passwords** are chosen at provisioning time and stored only as bcrypt hashes.
+No default ships in this repository. If someone is locked out, reset them with
+`POST /users/{id}/reset-password` rather than trying to recover the old one.
+
+Note that testers log in to Open WebUI, whose accounts and passwords are separate
+from the API's — the two became independent in the 2026-08-13 auth rework.
 
 ---
 

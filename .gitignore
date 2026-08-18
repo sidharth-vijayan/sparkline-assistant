@@ -130,3 +130,6 @@ ROUTING_FIX_PLAN.md
 # and commit. Every newly tracked document lives under that one directory so the
 # revoke stays a one-line change — keep it that way when adding more.
 
+
+# Rollback copies of .env — intentionally untracked (see CLAUDE.md)
+.env.bak-*

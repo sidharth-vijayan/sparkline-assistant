@@ -196,7 +196,7 @@ Never paste secret values into a transcript, a commit, or an issue. Real values 
 | What | Where | Notes |
 |---|---|---|
 | `SERVICE_TOKEN` | `.env` | The pipe authenticates with this, **never** with user passwords. |
-| `file.admin` login | `admin_tools/ingest_cli.py:34` default | `FileAdmin@2025`, verified working 2026-08-18. Weak default — rotate before the pilot widens. |
+| `file.admin` login | `SPARKLINE_ADMIN_PASSWORD` env var, or the CLI prompts | Rotated 2026-08-18; the old `FileAdmin@2025` no longer works. There is **no default in the source** any more — `admin_tools/ingest_cli.py` reads the env var and prompts if it is unset. |
 | Pilot user passwords | bcrypt hashes only | **Not recoverable.** Reset via the admin-reset flow; do not attempt to read them back. |
 | `WEBUI_SECRET_KEY` | PID 1 env of `sparkline_webui` | Not in any file. |
 

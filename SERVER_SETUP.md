@@ -199,11 +199,13 @@ $C up -d
 $C logs -f api             # want: startup.minio.ok / startup.qdrant.ok / ready
 ```
 
-Then seed the database (creates tables and the 10 pilot users, password
-`Sparkline@2025`):
+Then seed the database. `init_db` creates the tables and the `file.admin`
+account, and refuses to run without `ADMIN_INITIAL_PASSWORD` so that no known
+password is ever shipped. The pilot roster is separate and idempotent:
 
 ```bash
-$C exec api python -m db.init_db
+$C exec -e ADMIN_INITIAL_PASSWORD='<choose one>' api python -m db.init_db
+$C exec api python -m db.seed_pilot_users --password '<choose one>' --apply
 ```
 
 Check it answers:

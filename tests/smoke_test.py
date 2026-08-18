@@ -118,11 +118,17 @@ def check_api():
 
 def check_auth():
     section("Authentication")
+    password = os.getenv("SPARKLINE_ADMIN_PASSWORD")
+    if not password:
+        return fail(
+            "SPARKLINE_ADMIN_PASSWORD is not set. Export the file.admin password "
+            "to run this check; it is deliberately not stored in the repository."
+        )
     try:
         with httpx.Client(timeout=10) as client:
             r = client.post(
                 "http://localhost:8000/auth/login",
-                json={"username": "file.admin", "password": "FileAdmin@2025"}
+                json={"username": "file.admin", "password": password}
             )
             if r.status_code == 200:
                 token = r.json().get("access_token")

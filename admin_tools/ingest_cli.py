@@ -31,15 +31,23 @@ console = Console()
 
 API_URL = os.getenv("SPARKLINE_API_URL", "http://localhost:8000")
 ADMIN_USERNAME = os.getenv("SPARKLINE_ADMIN_USERNAME", "file.admin")
-ADMIN_PASSWORD = os.getenv("SPARKLINE_ADMIN_PASSWORD", "FileAdmin@2025")
+# No default. This account can ingest and withdraw documents for every user, so
+# a password shipped in the source is a password everyone with repo access has.
+ADMIN_PASSWORD = os.getenv("SPARKLINE_ADMIN_PASSWORD")
 
 
 def _get_token() -> str:
     """Authenticate and return a JWT token."""
+    password = ADMIN_PASSWORD
+    if not password:
+        # Prompting keeps the CLI usable without putting the secret in the
+        # shell history or the environment of every other process.
+        password = typer.prompt("Password for " + ADMIN_USERNAME, hide_input=True)
+
     with httpx.Client(timeout=30) as client:
         resp = client.post(
             f"{API_URL}/auth/login",
-            json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
+            json={"username": ADMIN_USERNAME, "password": password},
         )
         if resp.status_code != 200:
             console.print(f"[red]Login failed: {resp.text}[/red]")

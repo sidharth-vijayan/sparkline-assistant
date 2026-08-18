@@ -116,7 +116,7 @@ pass without any service: 75 of them, no network needed).
 | Credential | Status |
 |---|---|
 | `.env` values | On the server. Copy with `scp`, never by hand. |
-| `file.admin` / `FileAdmin@2025` | Documented default in `admin_tools/ingest_cli.py:34`; verified working 2026-08-18. Needed to ingest the tester documents. Weak — rotate before the pilot widens. |
+| `file.admin` password | Rotated 2026-08-18; `FileAdmin@2025` is dead. No default ships in the source — set `SPARKLINE_ADMIN_PASSWORD` or let the CLI prompt. Needed to ingest the tester documents. |
 | Six tester Open WebUI passwords | **Not recoverable.** Stored as bcrypt hashes. Reset them and reissue; do not try to read them back. |
 | Sparkline API pilot passwords | Seeded value is documented in `README.md`. Independent of the Open WebUI set since the 2026-08-13 auth rework. |
 | `WEBUI_SECRET_KEY` | Only in PID 1's environment inside `sparkline_webui`. Not in any file. |
