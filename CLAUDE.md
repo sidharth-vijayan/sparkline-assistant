@@ -9,10 +9,20 @@ Written 2026-08-18, when development moved off the shared server onto a laptop o
 
 ## Where things actually run
 
-The server is `SEPL-PC` (user `sepl`), and **it hosts two unrelated projects**. Ours is
-`~/proj1/sparkline-assistant`; a colleague's Dify-based `isv` app lives in `~/cv` and owns every
-`docker-*` container. Never restart, stop, or reconfigure a `docker-*` container — ours are all
+The server is `SEPL-PC` (user `sepl`), and **three unrelated things share it**. Everything runs as
+the same `sepl` user, so file ownership will not tell you who owns what:
+
+| Path / containers | Owner | What it is |
+|---|---|---|
+| `~/proj1/sparkline-assistant`, `sparkline_*` | ours | this project |
+| `~/cv` (`isv`, Fire YOLO, PPE, insightface) | **Suyash** | CCTV / person detection. Uses the GPU **directly**, not through Ollama. |
+| `/home/sepl/dify`, all `docker-*` containers | **shared company Dify** | Pre-existing team instance (accounts include Kaushik Iyer, Sandeep Pansare, Shruti Doshi, Yash Mehta), dating to March 2026. Not a teammate's dev project. |
+
+Never restart, stop, or reconfigure a `docker-*` container or anything under `~/cv`. Ours are all
 named `sparkline_*`.
+
+Dhruv, who owns the enterprise/ERP half of this project, works from his own laptop and has **no
+footprint on this server** — no MCP servers, no containers. Do not go looking for his services here.
 
 ### The LLM is not in the container
 
@@ -24,16 +34,27 @@ port 21434 so it cannot claim the real one. The actual LLM is a **host** Ollama 
 - `docker-compose.server.yml:22` overrides it to `http://host.docker.internal:11434/v1` — correct
   for the containerised API. Both must stay in step.
 
-### That host Ollama is shared with the colleague's project
+### Three tenants contend for one 16 GB GPU
 
-Dify's `provider_models` table points at the same daemon. So **pulling or deleting models is a
-cross-project action**, and VRAM is the binding constraint: the GPU is a 16 GB RTX 5060 Ti with
-~1.5 GB permanently held by the embedding and reranker models. One 9 GB 14B model fits
-comfortably; two do not, and Ollama will thrash rather than error.
+- **Us:** ~1.5 GB permanently held by the embedding and reranker models, plus ~9 GB whenever
+  Ollama has a 14B model warm.
+- **Shared company Dify:** registered against `qwen2.5-coder:14b` on this same host Ollama daemon,
+  so `ollama pull` and `ollama rm` are **not** private actions.
+- **Suyash's CV work:** YOLO and insightface loaded onto the GPU **directly**, outside Ollama, so
+  it is invisible to `ollama ps` and appears only in `nvidia-smi`. His stack is often down — a
+  reading of "14 GB free" usually means he is simply not running, not that there is headroom.
+
+Check `nvidia-smi` before assuming VRAM is available, and treat a GPU-heavy run as something to
+coordinate with Suyash rather than schedule unilaterally.
 
 Current model: **`qwen2.5:14b`** (general instruct). Chosen 2026-08-18 over `qwen2.5-coder:14b`,
-which is code-tuned and weaker at policy/HR prose. `qwen2.5-coder:14b` is kept installed only
-until the colleague's Dify config is repointed — delete it after that, not before.
+which is code-tuned and weaker at policy/HR prose.
+
+**Keep `qwen2.5-coder:14b` installed.** The shared Dify is configured against it. It is company
+infrastructure used by several people including the tech head, not a teammate's scratch project, so
+it is not ours to repoint — and deleting the model would break it. Since that second model is
+therefore permanent, capping Ollama to one *resident* model
+(`OLLAMA_MAX_LOADED_MODELS=1`) is the entire VRAM mitigation rather than half of it.
 
 **Do not re-evaluate GPT-OSS 20B.** It was tested on 2026-08-07 and rejected: it returned empty
 responses despite fitting in VRAM (`internship-tracking/resume_impact_tracker.md:212`). It was
@@ -230,7 +251,9 @@ Embedding runs on CUDA; the reranker is deliberately on CPU because VRAM is shar
 
 ## Do not
 
-- Touch `docker-*` containers, or `~/cv`, or `~/.ssh/isv_deploy` — all the colleague's project.
+- Touch `docker-*` containers or `/home/sepl/dify` (shared company Dify), or `~/cv` and
+  `~/.ssh/isv_deploy` (Suyash's CV project). Same `sepl` user, different owners.
+- Repoint or delete `qwen2.5-coder:14b` — the shared Dify depends on it.
 - Commit the `.bak` rollback files (`.env.bak-*`, `docker-compose.server.yml.bak-*`). They are
   intentionally untracked.
 - Edit the Pilot 1 column of `PILOT_1_BASELINE.md`. It is a frozen before/after measurement.
