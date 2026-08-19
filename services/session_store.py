@@ -60,7 +60,18 @@ class SessionDocumentStore:
         collection_name: Optional[str] = None,
         client: Optional[QdrantClient] = None,
     ) -> None:
-        self.collection_name = collection_name or settings.qdrant_session_collection_name
+        resolved = collection_name or settings.qdrant_session_collection_name
+        # This class drops collections and deletes by filter, and its tests run
+        # against the production Qdrant isolated only by name. Refusing the
+        # corpus collection here means that isolation does not depend on
+        # whoever writes the next test choosing the right string.
+        if resolved == settings.qdrant_collection_name:
+            raise ValueError(
+                f"refusing to operate on the document corpus collection "
+                f"'{resolved}' — SessionDocumentStore deletes collections and "
+                f"points, and must never be pointed at the corpus"
+            )
+        self.collection_name = resolved
         self._client = client or QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
