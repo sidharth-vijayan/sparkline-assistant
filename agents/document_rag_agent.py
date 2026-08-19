@@ -32,7 +32,7 @@ from access_control.pep import build_qdrant_filter
 from agents.tool_executor import ToolExecutor
 from config.settings import get_settings
 from db.models import User
-from retrieval.session_merge import merge_session_candidates
+from retrieval.session_merge import merge_session_candidates, reserve_session_slots
 from retrieval.citation_builder import Citation, build_citations, build_context_block
 from retrieval.hybrid_retrieval import hybrid_search
 from retrieval.query_normalizer import correct_typos
@@ -291,13 +291,23 @@ class DocumentRAGAgent:
         than on being an attachment.
         """
         raw_chunks = hybrid_search(query=search_text, qdrant_filter=qdrant_filter)
-        if session_ctx is not None:
-            raw_chunks = merge_session_candidates(
-                raw_chunks, session_ctx.search(search_text)
-            )
+        if session_ctx is None:
+            if not raw_chunks:
+                return []
+            return rerank(query=search_text, candidates=raw_chunks)
+
+        raw_chunks = merge_session_candidates(
+            raw_chunks, session_ctx.search(search_text)
+        )
         if not raw_chunks:
             return []
-        return rerank(query=search_text, candidates=raw_chunks)
+        # Score everything, then compose the final set, rather than letting
+        # rerank truncate first. One attachment chunk against a whole corpus
+        # loses a vague query on volume alone and is cut before anyone sees it.
+        scored = rerank(
+            query=search_text, candidates=raw_chunks, top_k=len(raw_chunks)
+        )
+        return reserve_session_slots(scored, final_k=settings.retrieval_top_k_rerank)
 
     @staticmethod
     def _top_score(reranked: list[dict]) -> float | None:

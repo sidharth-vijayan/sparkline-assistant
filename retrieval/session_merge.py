@@ -79,6 +79,56 @@ def merge_session_candidates(
     return merged[:cap]
 
 
+DEFAULT_RESERVED_SLOTS = 3
+
+
+def reserve_session_slots(
+    reranked: list[dict],
+    final_k: int,
+    reserved: int = DEFAULT_RESERVED_SLOTS,
+) -> list[dict]:
+    """
+    Keep the top `final_k` results, guaranteeing attachments a share of them.
+
+    Reranking alone is not enough. A vague question — "summarise this", the most
+    natural thing to ask about a file you just attached — gives the
+    cross-encoder nothing to match on, so a single attachment chunk competing
+    against a whole corpus is simply outnumbered and truncated away. The user
+    then gets an answer drawn from documents they did not ask about, with no
+    sign their file was ignored. That was observed, not hypothesised.
+
+    So attachments get a floor, not a boost: up to `reserved` of the final
+    slots, filled by the best-reranked attachment chunks. It is only a floor —
+    an attachment that wins on merit takes as many slots as it earns.
+
+    Args:
+        reranked: All candidates, rerank_score attached, best first.
+        final_k: How many results to return.
+        reserved: Slots guaranteed to attachments when any are present.
+    """
+    session = [c for c in reranked if c.get("is_session_chunk")]
+    if not session:
+        return reranked[:final_k]
+
+    keep_session = session[:min(reserved, len(session), final_k)]
+    kept_ids = {id(c) for c in keep_session}
+
+    # Fill what is left in rerank order, skipping anything already reserved.
+    remaining = [c for c in reranked if id(c) not in kept_ids]
+    final = keep_session + remaining[: max(0, final_k - len(keep_session))]
+
+    # Restore rerank order so the prompt sees the strongest evidence first,
+    # whichever collection it came from.
+    final.sort(key=lambda c: c.get("rerank_score", 0.0), reverse=True)
+
+    logger.info(
+        "session_merge.slots_reserved",
+        session_kept=len(keep_session),
+        returned=len(final),
+    )
+    return final
+
+
 def has_session_evidence(chunks: list[dict]) -> bool:
     """
     Whether an attachment chunk actually survived into the final results.

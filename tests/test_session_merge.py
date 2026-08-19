@@ -159,3 +159,87 @@ def test_handles_an_empty_result_set():
     from retrieval.session_merge import has_session_evidence
 
     assert has_session_evidence([]) is False
+
+
+# ── Reserved slots: attachments must not be crowded out ───────────────────
+
+def scored(text, session=False, score=0.0):
+    c = corpus_chunk(text) if not session else {
+        "text": text, "document_name": "attached.docx",
+        "qdrant_point_id": f"session-{text}", "is_session_chunk": True,
+    }
+    c["rerank_score"] = score
+    return c
+
+
+def test_without_an_attachment_it_is_just_the_top_k():
+    from retrieval.session_merge import reserve_session_slots
+
+    ranked = [scored(f"c{i}", score=10 - i) for i in range(10)]
+
+    final = reserve_session_slots(ranked, final_k=5)
+
+    assert [c["text"] for c in final] == ["c0", "c1", "c2", "c3", "c4"]
+
+
+def test_an_attachment_that_lost_the_rerank_still_reaches_the_answer():
+    """The bug this fixes: one attachment chunk against a 186-chunk corpus
+    loses on a vague query like 'summarise this', gets truncated away, and the
+    user is answered from documents they did not ask about."""
+    from retrieval.session_merge import reserve_session_slots
+
+    ranked = [scored(f"c{i}", score=10 - i) for i in range(10)]
+    ranked.append(scored("the attachment", session=True, score=-99))
+
+    final = reserve_session_slots(ranked, final_k=5)
+
+    assert any(c.get("is_session_chunk") for c in final)
+    assert "the attachment" in [c["text"] for c in final]
+
+
+def test_reserves_several_slots_when_the_attachment_has_several_chunks():
+    from retrieval.session_merge import reserve_session_slots
+
+    ranked = [scored(f"c{i}", score=10 - i) for i in range(10)]
+    ranked += [scored(f"s{i}", session=True, score=-50 - i) for i in range(4)]
+
+    final = reserve_session_slots(ranked, final_k=5, reserved=3)
+
+    assert sum(c.get("is_session_chunk", False) for c in final) == 3
+    assert len(final) == 5
+
+
+def test_never_reserves_more_slots_than_the_attachment_has_chunks():
+    from retrieval.session_merge import reserve_session_slots
+
+    ranked = [scored(f"c{i}", score=10 - i) for i in range(10)]
+    ranked.append(scored("only one", session=True, score=-99))
+
+    final = reserve_session_slots(ranked, final_k=5, reserved=3)
+
+    assert sum(c.get("is_session_chunk", False) for c in final) == 1
+    assert len(final) == 5
+
+
+def test_an_attachment_that_wins_on_merit_is_not_penalised():
+    """Reserving a floor must not become a ceiling."""
+    from retrieval.session_merge import reserve_session_slots
+
+    ranked = [scored(f"s{i}", session=True, score=100 - i) for i in range(5)]
+    ranked += [scored(f"c{i}", score=1) for i in range(5)]
+
+    final = reserve_session_slots(ranked, final_k=5, reserved=2)
+
+    assert sum(c.get("is_session_chunk", False) for c in final) == 5
+
+
+def test_results_stay_in_rerank_order():
+    from retrieval.session_merge import reserve_session_slots
+
+    ranked = [scored(f"c{i}", score=10 - i) for i in range(6)]
+    ranked.append(scored("late", session=True, score=-99))
+
+    final = reserve_session_slots(ranked, final_k=4)
+
+    corpus_texts = [c["text"] for c in final if not c.get("is_session_chunk")]
+    assert corpus_texts == sorted(corpus_texts, key=lambda t: int(t[1:]))
