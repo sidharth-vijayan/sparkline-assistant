@@ -38,13 +38,16 @@ class Pipe:
         self.name = "Sparkline RAG"
         self.id = "sparkline"
         self.valves = self.Valves()
-        # Per-user state: {user_id: {"token": str, "session_id": str}}
+        # Per-user state: {user_id: {"token": str}}. The session ID is NOT
+        # cached here any more — it is the chat ID, which arrives per request.
         self._user_state: dict[str, dict] = {}
 
     def pipe(
         self,
         body: dict,
         __user__: Optional[dict] = None,
+        __chat_id__: Optional[str] = None,
+        __files__: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """
         Handle the chat completion request with generator streaming to prevent timeouts.
@@ -72,7 +75,15 @@ class Pipe:
             yield self._handle_task(task, messages)
             return
 
-        # Always fetch fresh token or session for user
+        # The conversation is the chat, not the user. This was previously one
+        # generated ID per user, reused for every chat they opened, so the
+        # Redis history of one conversation was read back as context in all the
+        # others. It is also what scopes per-chat attachments, which cannot
+        # work without it. Falls back to a generated ID when Open WebUI does
+        # not supply one, which keeps direct API callers working.
+        session_id = __chat_id__ or self._new_session_id()
+
+        # Always fetch fresh token for user
         state = self._get_auth(user_id, username, user_email)
         if not state.get("token"):
             yield (
@@ -90,7 +101,8 @@ class Pipe:
                 user_id=user_id,
                 username=username,
                 email=user_email,
-                session_id=state["session_id"],
+                session_id=session_id,
+                chat_id=__chat_id__,
                 all_messages=messages,
             )
         except Exception as e:
@@ -180,7 +192,7 @@ class Pipe:
     def _get_auth(self, user_id: str, username: str, email: str) -> dict:
         """Fetch token, generating/refreshing if missing."""
         if user_id not in self._user_state:
-            self._user_state[user_id] = {"token": None, "session_id": self._new_session_id()}
+            self._user_state[user_id] = {"token": None}
 
         state = self._user_state[user_id]
         if not state.get("token"):
@@ -245,6 +257,7 @@ class Pipe:
         email: str,
         session_id: str,
         all_messages: list[dict],
+        chat_id: Optional[str] = None,
     ) -> dict:
         token = self._user_state[user_id].get("token")
         
@@ -255,6 +268,7 @@ class Pipe:
                 json={
                     "messages": all_messages,
                     "session_id": session_id,
+                    "chat_id": chat_id,
                 },
             )
             
@@ -270,6 +284,7 @@ class Pipe:
                         json={
                             "messages": all_messages,
                             "session_id": session_id,
+                            "chat_id": chat_id,
                         },
                     )
 
