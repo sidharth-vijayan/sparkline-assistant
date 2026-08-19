@@ -278,3 +278,18 @@ These are templates — update the `X` values as you measure them:
 - Send the **original file** to our own readers rather than the interface's extracted text, because generic extraction flattens spreadsheets and the document set is spreadsheet-heavy.
 - Fixed conversation identity to the conversation rather than the user. This also resolved a live defect where one conversation's history was being read back as context in another.
 - Hold the interface's upload control **off** until the work is reviewed, even though the feature is finished.
+
+### 2026-08-19 (later)
+
+**Challenges**
+
+- Closing the file-export path meant solving a problem the obvious design does not: a link in a chat window is followed by a browser, which cannot send an authorisation header, so the link has to carry its own narrowly-scoped proof rather than relying on the session.
+- Adversarial testing found the assistant **is** vulnerable to instructions hidden inside document contents. It answered with the planted phrase, announced it was in maintenance mode, and printed its own instructions. Testing by eye would have missed this; planting a distinctive marker is what made it a hard pass/fail.
+
+**Key decisions**
+
+- Store generated files under a path that begins with the owner's identity, so there is no ownership check to forget — a different person resolving the same file reference looks somewhere else and finds nothing.
+- Give a download link a proof that names **one file and one person**, so a link that leaks grants that single file rather than the account.
+- Report a failed export in the chat rather than staying silent, because the model has already told the user it worked.
+- Make reclamation of attachments possible at all by giving the service read-only sight of the chat records — read-only because it belongs to the frontend, and nothing here should be able to write to it.
+- **Not** fixing the injection findings in the same pass. They need prompt restructuring and output checks, and are worth deciding deliberately rather than patching at the end of a long day. Access control held throughout, which is what makes that deferral defensible.
