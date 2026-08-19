@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
     qdrant_grpc_port: int = 6334
     qdrant_collection_name: str = "sparkline_documents"
+    # Per-chat attachments live in their own collection, never in the corpus
+    # one. That separation is the isolation mechanism: a corpus query cannot
+    # return a session chunk even if its filter is wrong, because it is not
+    # searching the collection those chunks are in.
+    qdrant_session_collection_name: str = "sparkline_session_docs"
     qdrant_vector_size: int = 1024  # BAAI/bge-large-en output dim
     qdrant_api_key: str = ""
 
