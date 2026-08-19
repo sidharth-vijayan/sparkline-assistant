@@ -293,3 +293,19 @@ These are templates — update the `X` values as you measure them:
 - Report a failed export in the chat rather than staying silent, because the model has already told the user it worked.
 - Make reclamation of attachments possible at all by giving the service read-only sight of the chat records — read-only because it belongs to the frontend, and nothing here should be able to write to it.
 - **Not** fixing the injection findings in the same pass. They need prompt restructuring and output checks, and are worth deciding deliberately rather than patching at the end of a long day. Access control held throughout, which is what makes that deferral defensible.
+
+### 2026-08-19 (close of day)
+
+**Challenges**
+
+- The assistant could be made to follow instructions hidden in a document's contents, and to recite its own operating instructions on request. Both were found by deliberate probing, not by review.
+- The first fix looked complete and was not. Protection was added to the document-answering path, but the disclosure attempts are handled by the general-knowledge path, which was still unprotected — so the hole stayed open on the busier of the two routes.
+- One probe reported a failure that was not real: it plainly asked the assistant to print a phrase, so complying was correct. A test that cannot tell obedience from ordinary helpfulness is worse than no test.
+
+**Key decisions**
+
+- Mark retrieved passages as **data with visible boundaries** rather than relying on layout, and strip the boundary marker from the content first, since a document containing it could otherwise break out of its own region.
+- State an explicit order of precedence in the instructions: text that arrives inside a document or a question and reads like a command is material to report on, never a command to follow.
+- Keep the final safety check **narrow on purpose**. Phrases that appear in the instructions but are also ordinary things to say were excluded, because replacing a correct answer with a refusal is a worse failure than the disclosure it prevents.
+- Re-ran the full behavioural suite after changing the instructions, on the basis that wording changes are exactly what quietly breaks routing and refusal handling. No regressions.
+- Turned the per-conversation upload control on now that the isolation and the injection defences are both demonstrated, rather than shipping it earlier on the strength of the code alone.
