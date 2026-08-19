@@ -208,41 +208,55 @@ class IngestionPipeline:
         self, file_bytes: bytes, filename: str, suffix: str
     ) -> list[TextChunk]:
         """Dispatch to the appropriate parser + chunker based on file type."""
-        if suffix == ".pdf":
-            pages = parse_pdf(file_bytes, filename)
-            # Run OCR for any pages that need it
-            for page in pages:
-                if page.extraction_method == "ocr_needed":
-                    ocr_result = ocr_pdf_page(file_bytes, page.page_number - 1)
-                    page.text = ocr_result.text
-                    page.extraction_method = "ocr"
-            return chunk_pdf_pages(pages)
+        return parse_and_chunk(file_bytes, filename, suffix)
 
-        elif suffix in (".doc", ".docx"):
-            blocks = parse_docx(file_bytes, filename)
-            return chunk_docx_blocks(blocks)
 
-        elif suffix in (".xls", ".xlsx", ".xlsm"):
-            sheets = parse_excel(file_bytes, filename)
-            return chunk_excel_sheets(sheets)
+def parse_and_chunk(
+    file_bytes: bytes, filename: str, suffix: str
+) -> list[TextChunk]:
+    """
+    Turn an uploaded file into chunks, by file type.
 
-        elif suffix in (".csv", ".tsv"):
-            parsed = parse_csv(file_bytes, filename)
-            if not parsed.text.strip():
-                raise ValueError(f"'{filename}' contains no readable rows")
-            return chunk_text(parsed.text, page_number=1)
+    Module-level rather than a pipeline method because per-chat attachments go
+    through the same parsers and chunker but never touch Postgres, so they have
+    no IngestionPipeline to call it on. Behaviour is unchanged for the corpus
+    path, which now delegates here.
+    """
+    if suffix == ".pdf":
+        pages = parse_pdf(file_bytes, filename)
+        # Run OCR for any pages that need it
+        for page in pages:
+            if page.extraction_method == "ocr_needed":
+                ocr_result = ocr_pdf_page(file_bytes, page.page_number - 1)
+                page.text = ocr_result.text
+                page.extraction_method = "ocr"
+        return chunk_pdf_pages(pages)
 
-        elif suffix in (".txt", ".md", ".log"):
-            parsed = parse_text(file_bytes, filename)
-            if not parsed.text.strip():
-                raise ValueError(f"'{filename}' is empty")
-            return chunk_text(parsed.text, page_number=1)
+    elif suffix in (".doc", ".docx"):
+        blocks = parse_docx(file_bytes, filename)
+        return chunk_docx_blocks(blocks)
 
-        else:
-            raise ValueError(
-                f"Unsupported file type: '{suffix}'. "
-                "Supported: .pdf, .docx, .doc, .xlsx, .xlsm, .xls, .csv, .txt, .md"
-            )
+    elif suffix in (".xls", ".xlsx", ".xlsm"):
+        sheets = parse_excel(file_bytes, filename)
+        return chunk_excel_sheets(sheets)
+
+    elif suffix in (".csv", ".tsv"):
+        parsed = parse_csv(file_bytes, filename)
+        if not parsed.text.strip():
+            raise ValueError(f"'{filename}' contains no readable rows")
+        return chunk_text(parsed.text, page_number=1)
+
+    elif suffix in (".txt", ".md", ".log"):
+        parsed = parse_text(file_bytes, filename)
+        if not parsed.text.strip():
+            raise ValueError(f"'{filename}' is empty")
+        return chunk_text(parsed.text, page_number=1)
+
+    else:
+        raise ValueError(
+            f"Unsupported file type: '{suffix}'. "
+            "Supported: .pdf, .docx, .doc, .xlsx, .xlsm, .xls, .csv, .txt, .md"
+        )
 
     async def _find_existing_document(self, filename: str) -> Optional[Document]:
         """Look up an existing document by original filename."""
