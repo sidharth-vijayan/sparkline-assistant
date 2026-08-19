@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Optional
 
+from retrieval.prompt_defence import fence_passage
+
 
 @dataclass
 class Citation:
@@ -97,7 +99,11 @@ def build_context_block(
             f"{page_str} | Uploaded: {citation.version_uploaded_at[:10]}"
         )
         lines.append(header)
-        lines.append(chunk.get("text", ""))
+        # The passage is wrapped in an explicit data region. Retrieved text is
+        # untrusted — a document whose contents contain instructions was shown
+        # to hijack the answer — so the boundary has to be visible to the model
+        # rather than implied by layout.
+        lines.append(fence_passage(chunk.get("text", "")))
         lines.append("")  # blank separator
 
     return "\n".join(lines).strip()
