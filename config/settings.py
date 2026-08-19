@@ -228,6 +228,13 @@ class Settings(BaseSettings):
     default_pilot_role: str = "pilot_user"
 
     # ── API Gateway ───────────────────────────────────────────────
+    # Base URL a *browser* can reach this API on, used to build download links
+    # for generated files. The pipe talks to the API over the docker network
+    # (host.docker.internal), which no browser can resolve, so the link in the
+    # chat has to be built from a separately configured public address.
+    # Empty means links come out relative, which will not work from a browser.
+    public_api_base_url: str = ""
+
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 

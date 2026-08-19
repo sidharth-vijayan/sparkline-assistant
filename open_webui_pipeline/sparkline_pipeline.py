@@ -122,6 +122,7 @@ class Pipe:
         answer = self._extract_answer(result)
         citations = result.get("citations", [])
         agent_type = result.get("agent_type", "")
+        tool_outputs = result.get("tool_outputs", [])
 
         if not answer:
             yield (
@@ -129,7 +130,7 @@ class Pipe:
                 f"{' (sources were still retrieved — see below)' if citations else ''}.\n"
             )
 
-        yield self._format_answer(answer, citations, agent_type)
+        yield self._format_answer(answer, citations, agent_type, tool_outputs)
 
     # ── Attachments ───────────────────────────────────────────────────────
 
@@ -451,8 +452,13 @@ class Pipe:
         answer: str,
         citations: list[dict],
         agent_type: str,
+        tool_outputs: Optional[list] = None,
     ) -> str:
         parts = [answer]
+
+        downloads = self._format_downloads(tool_outputs)
+        if downloads:
+            parts.append(downloads)
         if citations and self.valves.show_citations:
             shown = self._dedupe_citations(citations, self.valves.max_sources_shown)
             label = "Source" if len(shown) == 1 else "Sources"
@@ -469,6 +475,46 @@ class Pipe:
             parts.append(f"\n*{self._agent_label(agent_type)}*")
 
         return "\n".join(parts)
+
+    # Only export tools produce a file the user can fetch. Charts deliver
+    # differently and are unverified, so they are ignored here rather than
+    # rendered as a link that would not work.
+    EXPORT_TOOLS = ("export_to_word", "export_to_excel")
+
+    @staticmethod
+    def _format_downloads(tool_outputs) -> str:
+        """
+        Render generated files as download links.
+
+        This step did not exist. The API built the file and returned it, the
+        pipe forwarded only the answer text, and the model reported success —
+        so the user was told their export was ready and given nothing.
+
+        A file that could not be stored is stated rather than omitted, for the
+        same reason: the model has already claimed it worked.
+        """
+        lines = []
+        for out in tool_outputs or []:
+            if out.get("tool_name") not in Pipe.EXPORT_TOOLS:
+                continue
+            if not out.get("success"):
+                continue
+            payload = out.get("output") or {}
+            name = payload.get("filename") or "export"
+            url = payload.get("download_url")
+            if url:
+                lines.append(f"  📄 [{name}]({url})")
+            else:
+                lines.append(
+                    f"  ⚠️ **{name}** was generated but could not be saved for "
+                    f"download. Please try again."
+                )
+
+        if not lines:
+            return ""
+        label = "Generated file" if len(lines) == 1 else "Generated files"
+        body = "\n".join(lines)
+        return f"\n\n---\n**⬇️ {label}:**\n{body}"
 
     @staticmethod
     def _agent_label(agent_type: str) -> str:

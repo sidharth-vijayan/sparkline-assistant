@@ -103,6 +103,26 @@ async def get_current_user(
     return user
 
 
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """
+    The current user, or None when the request carries no usable session.
+
+    For routes that have a second, non-session way in — the export download
+    link, which a browser follows without any header at all. Returning None
+    rather than raising lets the route decide, and keeps this a real FastAPI
+    dependency so it can be substituted in tests.
+    """
+    if credentials is None or not credentials.credentials:
+        return None
+    try:
+        return await get_current_user(credentials=credentials, db=db)
+    except HTTPException:
+        return None
+
+
 async def get_current_admin(
     current_user: User = Depends(get_current_user),
 ) -> User:

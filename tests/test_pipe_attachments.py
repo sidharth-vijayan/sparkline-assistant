@@ -146,3 +146,65 @@ def test_unreadable_entries_are_dropped_rather_than_queued():
 def test_no_files_at_all_is_not_an_error():
     assert Pipe._pending_attachments([], already_held=set()) == []
     assert Pipe._pending_attachments(None, already_held=set()) == []
+
+
+# ── Export links: the step that was previously missing entirely ───────────
+
+def export_output(url="http://host:18000/exports/abc?token=t", name="Report.docx"):
+    return {
+        "tool_name": "export_to_word",
+        "success": True,
+        "output": {"filename": name, "download_url": url, "export_id": "abc"},
+    }
+
+
+def test_a_generated_file_becomes_a_download_link():
+    """The whole defect: the API returned the file and the pipe dropped it, so
+    the model claimed success and the user got nothing."""
+    out = Pipe._format_downloads([export_output()])
+
+    assert "Report.docx" in out
+    assert "http://host:18000/exports/abc?token=t" in out
+    assert "](" in out                      # rendered as a markdown link
+
+
+def test_several_files_are_all_linked():
+    outs = [export_output(name="One.docx", url="http://h/exports/1?token=a"),
+            export_output(name="Two.xlsx", url="http://h/exports/2?token=b")]
+
+    out = Pipe._format_downloads(outs)
+
+    assert "One.docx" in out and "Two.xlsx" in out
+
+
+def test_no_tool_output_means_no_download_section():
+    assert Pipe._format_downloads([]) == ""
+    assert Pipe._format_downloads(None) == ""
+
+
+def test_a_file_that_could_not_be_stored_says_so_instead_of_linking():
+    """Silence here is what made the original bug so bad — the model says it
+    worked, so the pipe must not also stay quiet when it did not."""
+    failed = {"tool_name": "export_to_word", "success": True,
+              "output": {"filename": "Report.docx", "download_url": None}}
+
+    out = Pipe._format_downloads([failed])
+
+    assert "Report.docx" in out
+    assert "](" not in out
+    assert "could not" in out.lower() or "failed" in out.lower()
+
+
+def test_a_failed_tool_call_is_not_reported_as_a_download():
+    failed = {"tool_name": "export_to_word", "success": False, "output": None}
+
+    assert Pipe._format_downloads([failed]) == ""
+
+
+def test_chart_output_without_a_download_url_is_ignored():
+    """Charts are unverified and deliver differently; they must not produce a
+    broken link here."""
+    chart = {"tool_name": "generate_chart", "success": True,
+             "output": {"chart_base64": "iVBOR...", "description": "a chart"}}
+
+    assert Pipe._format_downloads([chart]) == ""

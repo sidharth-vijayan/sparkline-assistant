@@ -52,6 +52,7 @@ class ToolExecutor:
         tool_calls: list[dict],
         context_chunks: list[dict],
         citations: list[dict] | None = None,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Execute a list of tool calls from the LLM and return their results.
@@ -120,16 +121,15 @@ class ToolExecutor:
                         sections=args.get("sections", []),
                         citations=citations,
                     )
-                    import base64
+                    filename = f"{args.get('title', 'report').replace(' ', '_')}.docx"
+                    mime = ("application/vnd.openxmlformats-officedocument"
+                            ".wordprocessingml.document")
+                    delivery = self._deliver(docx_bytes, filename, mime, user_id)
                     results.append({
                         "tool_call_id": call_id,
                         "tool_name": "export_to_word",
-                        "result_summary": f"Word document '{args.get('title')}' created successfully.",
-                        "output": {
-                            "file_base64": base64.b64encode(docx_bytes).decode("utf-8"),
-                            "filename": f"{args.get('title', 'report').replace(' ', '_')}.docx",
-                            "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        },
+                        "result_summary": self._summarise(args.get("title"), delivery),
+                        "output": delivery,
                         "success": True,
                     })
                 except Exception as e:
@@ -149,16 +149,15 @@ class ToolExecutor:
                         headers=args.get("headers", []),
                         rows=args.get("rows", []),
                     )
-                    import base64
+                    filename = f"{args.get('sheet_name', 'data').replace(' ', '_')}.xlsx"
+                    mime = ("application/vnd.openxmlformats-officedocument"
+                            ".spreadsheetml.sheet")
+                    delivery = self._deliver(xlsx_bytes, filename, mime, user_id)
                     results.append({
                         "tool_call_id": call_id,
                         "tool_name": "export_to_excel",
-                        "result_summary": f"Excel file '{args.get('sheet_name')}' created.",
-                        "output": {
-                            "file_base64": base64.b64encode(xlsx_bytes).decode("utf-8"),
-                            "filename": f"{args.get('sheet_name', 'data').replace(' ', '_')}.xlsx",
-                            "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        },
+                        "result_summary": self._summarise(args.get("sheet_name"), delivery),
+                        "output": delivery,
                         "success": True,
                     })
                 except Exception as e:
@@ -181,3 +180,74 @@ class ToolExecutor:
                 })
 
         return results
+
+    # ── Delivery ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _deliver(
+        data: bytes, filename: str, mime_type: str, user_id: str | None
+    ) -> dict:
+        """
+        Persist a generated file and describe how to fetch it.
+
+        Base64 is still returned so existing API callers keep working, but the
+        download link is the part that matters: without somewhere to fetch the
+        file from, the bytes were previously built and discarded while the model
+        announced success.
+
+        A failure to store is reported rather than raised. The file was
+        generated correctly, and losing the link is better than losing the
+        answer as well.
+        """
+        import base64
+
+        out = {
+            "file_base64": base64.b64encode(data).decode("utf-8"),
+            "filename": filename,
+            "mime_type": mime_type,
+            "bytes": len(data),
+            "export_id": None,
+            "download_url": None,
+        }
+        if not user_id:
+            logger.warning("tool_executor.no_owner_for_export", filename=filename)
+            return out
+
+        try:
+            from config.settings import get_settings
+            from gateway.middleware.download_token import create_download_token
+            from services.export_store import save_export
+
+            export_id = save_export(
+                user_id=user_id, filename=filename, data=data, mime_type=mime_type
+            )
+            token = create_download_token(user_id=user_id, export_id=export_id)
+            base = get_settings().public_api_base_url.rstrip("/")
+            out["export_id"] = export_id
+            out["download_url"] = f"{base}/exports/{export_id}?token={token}"
+        except Exception as e:
+            logger.error(
+                "tool_executor.export_delivery_failed",
+                filename=filename,
+                error=str(e),
+            )
+        return out
+
+    @staticmethod
+    def _summarise(title: str | None, delivery: dict) -> str:
+        """
+        What the model is told about its own tool call.
+
+        It must not be able to claim a successful download that did not happen,
+        so the wording follows what was actually stored.
+        """
+        name = title or delivery.get("filename", "file")
+        if delivery.get("download_url"):
+            return (
+                f"'{name}' was created and saved. A download link has been "
+                f"given to the user, so do not offer to send the file another way."
+            )
+        return (
+            f"'{name}' was generated but could not be saved for download. "
+            f"Tell the user the export failed and to try again."
+        )

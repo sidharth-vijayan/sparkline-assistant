@@ -208,7 +208,8 @@ class QueryRouter:
         if hint == Route.DOCUMENTS:
             log.info("router.dispatch.document_rag", reason="explicit_document_request")
             explicit = await self._rag_agent.answer(
-                query=query, session_id=session_id, intent=gate_intent, retrieval=retrieval,
+                query=query, session_id=session_id, intent=gate_intent,
+                retrieval=retrieval, user_id=user_id,
             )
             await set_last_document_query(session_id, query, explicit.get("answer", ""))
             return explicit
@@ -222,7 +223,7 @@ class QueryRouter:
             log.info("router.dispatch.document_rag", reason="session_attachment")
             attached = await self._rag_agent.answer(
                 query=query, session_id=session_id, intent=gate_intent,
-                retrieval=retrieval,
+                retrieval=retrieval, user_id=user_id,
             )
             await set_last_document_query(session_id, query, attached.get("answer", ""))
             return attached
@@ -248,6 +249,7 @@ class QueryRouter:
             retrieval=retrieval,
             blended=blended,
             record_history=False,
+            user_id=user_id,
         )
 
         # ── Safety net ────────────────────────────────────────────────

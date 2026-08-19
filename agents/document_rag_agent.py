@@ -376,6 +376,7 @@ class DocumentRAGAgent:
         retrieval: RetrievalResult,
         blended: bool = False,
         record_history: bool = True,
+        user_id: str | None = None,
     ) -> dict:
         """
         Turn a RetrievalResult into an answer.
@@ -428,6 +429,10 @@ class DocumentRAGAgent:
                 tool_outputs = await self._tool_executor.execute_tool_calls(
                     tool_calls=tool_calls,
                     context_chunks=reranked,
+                    citations=[c.to_dict() for c in citations],
+                    # Needed to store the generated file against its owner —
+                    # without it the export cannot be delivered, only built.
+                    user_id=user_id,
                 )
                 # Add tool results back into the conversation and get final answer
                 messages.append(completion["choices"][0]["message"])
@@ -507,6 +512,7 @@ class DocumentRAGAgent:
             session_id=session_id,
             intent=intent,
             retrieval=retrieval,
+            user_id=user_id,
         )
 
     async def _load_user(self, user_id: str, db: AsyncSession) -> UserAttributes | None:
