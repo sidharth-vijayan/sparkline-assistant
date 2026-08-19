@@ -18,6 +18,7 @@ can be added later without re-ingesting anything.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
@@ -33,6 +34,22 @@ logger = structlog.get_logger(__name__)
 settings = get_settings()
 
 _SCROLL_BATCH = 256
+
+
+@dataclass(frozen=True)
+class SessionDocument:
+    """One uploaded attachment, as an administrator needs to see it.
+
+    Answers "who attached what, where, and when" without anyone having to open
+    Qdrant by hand — the unit an admin lists and withdraws.
+    """
+
+    session_document_id: str
+    chat_id: str
+    owner_user_id: str
+    document_name: str
+    uploaded_at: datetime
+    chunk_count: int
 
 
 class SessionDocumentStore:
@@ -208,6 +225,120 @@ class SessionDocumentStore:
         ]
 
     # ── Deleting ──────────────────────────────────────────────────────────
+
+    def list_documents(
+        self,
+        owner_user_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> list[SessionDocument]:
+        """
+        Enumerate stored attachments, newest first.
+
+        Attachments never expire, so this is the only way anyone finds out what
+        the store is holding. Both filters are optional: no arguments lists
+        everything, which is the administrator's view.
+        """
+        conditions = []
+        if owner_user_id:
+            conditions.append(
+                qmodels.FieldCondition(
+                    key="owner_user_id", match=qmodels.MatchValue(value=owner_user_id)
+                )
+            )
+        if chat_id:
+            conditions.append(
+                qmodels.FieldCondition(
+                    key="chat_id", match=qmodels.MatchValue(value=chat_id)
+                )
+            )
+        scroll_filter = qmodels.Filter(must=conditions) if conditions else None
+
+        # Chunks are the stored unit; a document is an aggregate over them.
+        docs: dict[str, dict] = {}
+        offset = None
+        while True:
+            points, offset = self._client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=scroll_filter,
+                limit=_SCROLL_BATCH,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for p in points:
+                payload = p.payload or {}
+                doc_id = payload.get("session_document_id")
+                if not doc_id:
+                    continue
+                entry = docs.setdefault(
+                    doc_id,
+                    {
+                        "chat_id": payload.get("chat_id", ""),
+                        "owner_user_id": payload.get("owner_user_id", ""),
+                        "document_name": payload.get("document_name", ""),
+                        "uploaded_at_ts": float(payload.get("uploaded_at_ts") or 0.0),
+                        "chunk_count": 0,
+                    },
+                )
+                entry["chunk_count"] += 1
+            if offset is None:
+                break
+
+        return sorted(
+            (
+                SessionDocument(
+                    session_document_id=doc_id,
+                    chat_id=e["chat_id"],
+                    owner_user_id=e["owner_user_id"],
+                    document_name=e["document_name"],
+                    uploaded_at=datetime.fromtimestamp(
+                        e["uploaded_at_ts"], tz=timezone.utc
+                    ),
+                    chunk_count=e["chunk_count"],
+                )
+                for doc_id, e in docs.items()
+            ),
+            key=lambda d: d.uploaded_at,
+            reverse=True,
+        )
+
+    def delete_document(self, session_document_id: str) -> int:
+        """
+        Withdraw a single attachment, leaving the rest of its chat in place.
+
+        The sweep deletes whole chats; this is the administrator's scalpel for
+        one file. Returns the number of chunks removed.
+        """
+        if not session_document_id:
+            return 0
+
+        matching = [
+            d for d in self.list_documents()
+            if d.session_document_id == session_document_id
+        ]
+        if not matching:
+            return 0
+        freed = matching[0].chunk_count
+
+        self._client.delete(
+            collection_name=self.collection_name,
+            points_selector=qmodels.FilterSelector(
+                filter=qmodels.Filter(
+                    must=[
+                        qmodels.FieldCondition(
+                            key="session_document_id",
+                            match=qmodels.MatchValue(value=session_document_id),
+                        )
+                    ]
+                )
+            ),
+        )
+        logger.info(
+            "session_store.document_deleted",
+            session_document_id=session_document_id,
+            chunks=freed,
+        )
+        return freed
 
     def delete_by_chat_ids(self, chat_ids: Iterable[str]) -> int:
         """

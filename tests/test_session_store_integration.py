@@ -30,18 +30,31 @@ def vec(seed: float) -> list[float]:
     return [seed] + [0.0] * (VECTOR_SIZE - 1)
 
 
-@pytest.fixture
-def store():
-    """A store pointed at a throwaway collection, dropped afterwards."""
+@pytest.fixture(scope="module")
+def _store():
+    """The throwaway collection, created once for the module.
+
+    Deliberately not per-test: creating a collection means creating three
+    payload indexes, and doing that for every test rate-limits Qdrant
+    (ResourceExhausted). Tests get a clean slate from the `store` fixture
+    below, which empties the collection rather than rebuilding it.
+    """
     try:
         s = session_store.SessionDocumentStore(collection_name=TEST_COLLECTION)
+        s.drop_collection()
         s.ensure_collection()
     except Exception as e:                     # pragma: no cover
         pytest.skip(f"Qdrant unreachable: {e}")
-    s.drop_collection()
-    s.ensure_collection()
     yield s
     s.drop_collection()
+
+
+@pytest.fixture
+def store(_store):
+    """A store holding nothing, for one test."""
+    _store.delete_by_chat_ids([h.chat_id for h in _store.held_chats()])
+    yield _store
+    _store.delete_by_chat_ids([h.chat_id for h in _store.held_chats()])
 
 
 def add(store, chat_id, user_id, n=2, uploaded_at=None, name="notes.docx"):
@@ -140,8 +153,98 @@ def test_deleting_nothing_is_a_no_op(store):
     assert {h.chat_id for h in store.held_chats()} == {"chat-1"}
 
 
-def test_session_chunks_do_not_land_in_the_corpus_collection(store):
-    """The separate collection is the isolation mechanism — assert it holds."""
+# ── The structural claim the whole design rests on ────────────────────────
+
+def test_a_corpus_search_cannot_return_session_chunks(store):
+    """The design's core claim: because every pilot user resolves to
+    full_access, the corpus filter is only must=[is_active_version]. That
+    filter would happily match a session chunk. What excludes it is that the
+    corpus search is not looking in this collection at all — the ABSENCE of a
+    session scope must EXCLUDE session chunks, not include them."""
+    from access_control.pdp import PDPDecision, PDPResult
+    from access_control.pep import build_qdrant_filter
+    from services.qdrant_service import search_dense
+
+    add(store, "chat-1", "user-A", n=3)
+
+    # The real filter a pilot user gets: full access, no session scope at all.
+    pilot = PDPResult(decision=PDPDecision.ALLOW, reason="pilot", full_access=True)
+    corpus_filter = build_qdrant_filter(pilot)
+
+    hits = search_dense(query_vector=vec(0.1), qdrant_filter=corpus_filter, top_k=50)
+
+    returned_docs = {h["payload"].get("document_name") for h in hits}
+    assert "notes.docx" not in returned_docs
+    assert all("chat_id" not in (h["payload"] or {}) for h in hits)
+
+
+def test_the_two_collections_are_actually_distinct(store):
+    assert store.collection_name != settings.qdrant_collection_name
+
+
+# ── Admin enumeration and deletion ────────────────────────────────────────
+
+def test_lists_documents_with_the_metadata_an_admin_needs(store):
+    """Owner, chat, filename and upload time — enough to answer 'who attached
+    what, where, and when' without opening Qdrant by hand."""
+    add(store, "chat-1", "user-A", n=3, name="budget.xlsx")
+
+    docs = store.list_documents()
+
+    assert len(docs) == 1
+    doc = docs[0]
+    assert doc.owner_user_id == "user-A"
+    assert doc.chat_id == "chat-1"
+    assert doc.document_name == "budget.xlsx"
+    assert doc.chunk_count == 3
+    assert doc.uploaded_at is not None
+    assert doc.session_document_id
+
+
+def test_lists_every_document_separately_even_within_one_chat(store):
+    add(store, "chat-1", "user-A", n=2, name="first.docx")
+    add(store, "chat-1", "user-A", n=4, name="second.docx")
+
+    docs = store.list_documents()
+
+    assert {d.document_name for d in docs} == {"first.docx", "second.docx"}
+    assert {d.chunk_count for d in docs} == {2, 4}
+
+
+def test_can_list_just_one_owners_documents(store):
+    add(store, "chat-1", "user-A", n=2, name="mine.docx")
+    add(store, "chat-2", "user-B", n=2, name="theirs.docx")
+
+    docs = store.list_documents(owner_user_id="user-A")
+
+    assert {d.document_name for d in docs} == {"mine.docx"}
+
+
+def test_can_list_just_one_chats_documents(store):
+    add(store, "chat-1", "user-A", n=2, name="here.docx")
+    add(store, "chat-2", "user-A", n=2, name="elsewhere.docx")
+
+    docs = store.list_documents(chat_id="chat-1")
+
+    assert {d.document_name for d in docs} == {"here.docx"}
+
+
+def test_deletes_a_single_document_leaving_the_rest_of_the_chat(store):
+    """An admin withdrawing one file must not clear the whole conversation."""
+    add(store, "chat-1", "user-A", n=2, name="keep.docx")
+    add(store, "chat-1", "user-A", n=3, name="withdraw.docx")
+    doomed = next(d for d in store.list_documents() if d.document_name == "withdraw.docx")
+
+    freed = store.delete_document(doomed.session_document_id)
+
+    assert freed == 3
+    assert {d.document_name for d in store.list_documents()} == {"keep.docx"}
+
+
+def test_deleting_an_unknown_document_removes_nothing(store):
     add(store, "chat-1", "user-A", n=2)
 
-    assert store.collection_name != settings.qdrant_collection_name
+    freed = store.delete_document("00000000-0000-0000-0000-000000000000")
+
+    assert freed == 0
+    assert len(store.list_documents()) == 1
