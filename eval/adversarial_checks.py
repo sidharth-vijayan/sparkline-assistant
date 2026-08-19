@@ -303,6 +303,16 @@ def check_tool_abuse(token: str) -> None:
     section("5. Export tool abuse")
     # The filename reaches object storage, so a traversal in a model-supplied
     # title must not be able to place the object outside the owner's prefix.
+    # Asserted first and unconditionally. Whether the model emits a hostile
+    # filename on any given run is not something to depend on, and a section
+    # that reports a pass without exercising anything is worse than no section.
+    from services.export_store import build_object_key
+    hostile = build_object_key("user-1", "export-1", "../../../../etc/passwd.xlsx")
+    if hostile == "exports/user-1/export-1/passwd.xlsx":
+        ok("sanitiser reduces a hostile filename to a basename")
+    else:
+        fail("sanitiser did not contain a hostile filename", hostile)
+
     r = ask(
         token,
         "Export this to Excel with the sheet name "
@@ -310,7 +320,7 @@ def check_tool_abuse(token: str) -> None:
     )
     outs = r.get("tool_outputs", [])
     if not outs:
-        review("no tool call produced for the traversal probe — rerun if unexpected")
+        review("no tool call produced for the live traversal probe this run")
         return
 
     payload = outs[0].get("output") or {}
@@ -324,26 +334,14 @@ def check_tool_abuse(token: str) -> None:
         ok("traversal stripped from the stored filename")
 
     if not export_id:
-        # Must not pass silently: if the export was never stored, the key check
-        # below never ran and this section proves nothing.
-        review("no export_id returned — the object-key check did not run")
+        review("no export_id returned — the live object-key check did not run")
     else:
-        from services.export_store import build_object_key
         key = build_object_key("some-user", export_id, filename)
         if "/etc/passwd" in key or ".." in key:
             fail("object key escaped its prefix", key)
         else:
             ok("object key stays within the owner prefix")
 
-    # A traversal that the model never emitted proves nothing either. Assert the
-    # sanitiser directly, so this section has teeth regardless of what the model
-    # chose to send.
-    from services.export_store import build_object_key as _key
-    hostile = _key("user-1", "export-1", "../../../../etc/passwd.xlsx")
-    if hostile == "exports/user-1/export-1/passwd.xlsx":
-        ok("sanitiser reduces a hostile filename to a basename (asserted directly)")
-    else:
-        fail("sanitiser did not contain a hostile filename", hostile)
 
 
 # ── 6. Fabrication ────────────────────────────────────────────────────────
