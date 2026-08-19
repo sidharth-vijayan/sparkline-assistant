@@ -1,0 +1,376 @@
+======================================================================
+task_wise_daily_summary.docx
+  [  0] (Normal) Sparkline Internship — Task-Based Work Log
+  [  1] (Normal) Intern: Sidharth  |  Project: Sparkline AI Assistant
+  [  3] (Heading 1) Week 1 (Jul 8 – Jul 10, 2026)
+  [  4] (List Paragraph) Induction
+  [  5] (List Paragraph) 1st  team discussion with Shruti mam.
+  [  6] (List Paragraph) Defining the scope of the project.
+  [ 10] (Heading 2) Task 1 — System Architecture Design
+  [ 12] (Normal) What I did: Evaluated approaches for a fully local, no-external-API enterprise AI stack and selected the vecto
+  [ 13] (Normal) Decision made: Ollama for dev-time LLM serving and vLLM for production, both behind one OpenAI-compatible API 
+  [ 14] (Normal) How I implemented it: Wrote docker-compose.yml (Postgres 16, Redis 7, MinIO, Qdrant, Ollama), .env.example (30
+  [ 15] (Normal) Challenges faced:
+  [ 16] (List Paragraph) Docker Engine wouldn't start due to Hyper-V/WSL2 virtualization not being enabled on Windows — required OS-lev
+  [ 18] (Heading 2) Task 2 — Database Design & Schema
+  [ 20] (Normal) What I did: Designed a relational schema supporting document versioning, per-document access policies, chunk-t
+  [ 21] (Normal) Decision made: Non-destructive versioning: re-uploaded documents soft-deactivate the old version (is_active=Fa
+  [ 22] (Normal) How I implemented it: Built db/models.py with 5 SQLAlchemy ORM models (User, Document, DocumentVersion, Chunk,
+  [ 24] (Normal) Challenges faced:
+  [ 25] (List Paragraph) bcrypt v5 dropped the internal attribute passlib uses for version detection, crashing seeding with a 72-byte p
+  [ 26] (List Paragraph) Emoji characters in seed-script print statements crashed on Windows PowerShell's CP1252 encoding — replaced wi
+  [ 29] (Heading 1) Week 2 (Jul 13 – Jul 17, 2026)
+  [ 31] (Heading 2) Task 3 — Infrastructure Service Wrappers
+  [ 33] (Normal) What I did: Built the connection layer every other component depends on: async Postgres, async Redis, MinIO ob
+  [ 34] (Normal) Decision made: All service clients are module-level singletons initialized once on import — not per-request — 
+  [ 35] (Normal) How I implemented it: Six service modules: postgres_service.py (async SQLAlchemy/asyncpg), redis_service.py (s
+  [ 36] (Normal) Challenges faced:
+  [ 37] (List Paragraph) sentence-transformers pulls in PyTorch, whose GPU build crashed on import (DLL init failure) without an active
+  [ 39] (Heading 2) Task 4 — Document Parsing Layer
+  [ 41] (Normal) What I did: Mapped the failure modes of each document type — image-only PDFs need OCR, native-text PDFs don't,
+  [ 42] (Normal) Decision made: Each parser is fully independent and selected by MIME type; OCR is a fallback only, triggered w
+  [ 44] (Normal) How I implemented it: Four parser modules: pdf_parser.py (pdfplumber primary, PyMuPDF-to-Tesseract OCR fallbac
+  [ 45] (Normal) Challenges faced: Nothing significant.
+  [ 47] (Heading 2) Task 5 — Chunking & BM25 Indexing
+  [ 49] (Normal) What I did: Compared fixed-size, sentence-boundary, and token-aware chunking, and evaluated BM25 as a sparse r
+  [ 50] (Normal) Decision made: 400-token chunks with 80-token overlap (both configurable), soft sentence-boundary snapping wit
+  [ 51] (Normal) How I implemented it: chunker.py (tiktoken cl100k_base encoding, sentence-boundary-aware splitting) and bm25_i
+  [ 52] (Normal) Challenges faced:
+  [ 53] (List Paragraph) tiktoken downloads its vocabulary file from an OpenAI Azure blob URL on first import, which the corporate prox
+  [ 55] (Heading 1) Week 3 (Jul 20 – Jul 27, 2026)
+  [ 57] (Heading 2) Task 6 — Embedding & Qdrant Ingestion
+  [ 59] (Normal) What I did: Benchmarked bge-large-en against bge-base-en and bge-small-en, and reviewed Qdrant's payload index
+  [ 60] (Normal) Decision made: bge-large-en (1024-dim) for accuracy, accepting the extra storage cost. Every vector point carr
+  [ 61] (Normal) How I implemented it: embedder.py — takes chunked text, calls embedding_service.embed_batch(), builds Qdrant P
+  [ 62] (Normal) Challenges faced: Nothing significant.
+  [ 66] (Heading 2) Task 7 — Hybrid Retrieval Pipeline
+  [ 68] (Normal) What I did: Researched Reciprocal Rank Fusion as a parameter-free way to merge two differently-scaled ranked l
+  [ 69] (Normal) Decision made: Dense (Qdrant, top-20) + BM25 (top-20) → RRF merge → top-20 fused → cross-encoder rerank (ms-ma
+  [ 70] (Normal) How I implemented it: hybrid_retrieval.py (orchestrates parallel BM25 + Qdrant search, RRF merge, reranking), 
+  [ 71] (Normal) Challenges faced: Nothing significant.
+  [ 73] (Heading 2) Task 8 — LLM Client & Query Router
+  [ 75] (Normal) What I did: Weighed embedding-based, keyword-based, and LLM-based intent classification for routing incoming q
+  [ 76] (Normal) Decision made: A stateless two-step router: classify intent (general / document_rag / enterprise) from query p
+  [ 77] (Normal) How I implemented it: llm_client.py (async httpx client, streaming and non-streaming, fully config-driven) and
+  [ 78] (Normal) Challenges faced: Nothing significant.
+  [ 81] (Heading 2) Task 09 — FastAPI Gateway: Routes & Middleware
+  [ 83] (Normal) What I did: Designed the chat endpoint to be OpenAI-format-compatible so Open WebUI can connect without a cust
+  [ 84] (Normal) Decision made: Auth middleware validates JWT on every protected route and injects the current user into reques
+  [ 85] (Normal) How I implemented it: gateway/main.py (app factory, CORS, startup/shutdown hooks), routes/chat.py (/v1/chat/co
+  [ 86] (Normal) Challenges faced: Nothing significant.
+  [ 89] (Heading 2) Task 10 — Docker / Windows Virtualization Setup Issue
+  [ 91] (Normal) What I did: Attempted to bring up the Docker Compose stack (Postgres, Redis, MinIO, Qdrant) for the first time
+  [ 92] (Normal) Decision made: Rather than working around it with a partial setup, decided to properly fix the underlying virt
+  [ 93] (Normal) How I implemented it: Enabled the 'Virtual Machine Platform' and 'Windows Subsystem for Linux' Windows feature
+  [ 94] (Normal) Challenges faced:
+  [ 95] (List Paragraph) Docker Desktop failed to initialize on first launch, throwing a virtualization-not-enabled error, because neit
+  [ 96] (List Paragraph) After enabling the required Windows features, a restart was needed for the changes to take effect before Docke
+  [ 98] (Heading 1) Week 4 (Jul 28 – Aug 4, 2026)
+  [100] (Heading 2) Task 11 — Testing Infrastructure
+  [102] (Normal) What I did: Built the two-tier test strategy underpinning every component above: isolated unit tests and a liv
+  [103] (Normal) Decision made: 10 offline unit tests covering settings parsing, intent classification, PDP decision logic, PEP
+  [104] (Normal) How I implemented it: test_unit_components.py and smoke_test.py, both fully offline-capable via the tiktoken m
+  [105] (Normal) Challenges faced:
+  [106] (List Paragraph) Running smoke_test.py directly as a file path caused No module named 'config' errors since Python doesn't add 
+  [107] (Normal) qdrant-client restructured CollectionInfo so vectors_count is no longer exposed directly — fixed with a getatt
+  [109] (Heading 2) Task 12 — Frontend Integration & Open WebUI Pipeline Setup
+  [111] (Normal) What I did: Got Open WebUI wired up as the actual chat interface for the RAG system today, connected straight 
+  [112] (Normal) Decision made: Went with Open WebUI's Pipe Function instead of a Filter, so "Sparkline RAG" shows up as its ow
+  [113] (Normal) How I implemented it: Added open-webui to docker-compose.yml on port 3000, wrote open_webui_pipeline/sparkline
+  [114] (Normal) Challenges faced:
+  [115] (List Paragraph) Open WebUI's Filters kept letting the 1B model hallucinate instead of actually using what we retrieved — had t
+  [116] (List Paragraph) The Ollama Docker image doesn't ship with curl, so the healthcheck in docker-compose was failing before the co
+  [117] (List Paragraph) qdrant-client v1.11 quietly dropped client.search() — had to go update the retrieval code to use client.query_
+  [118] (List Paragraph) Running everything on CPU meant queries were taking around 73 seconds, which was long enough for the browser t
+  [119] (Heading 1) Week 5 (Aug 5 – Aug 7, 2026)
+  [120] (Heading 2) Task 13 — First Production Deployment on Shared GPU Server
+  [121] (Normal) What I did: Brought the full application stack up for the first time on the shared production GPU server (Ubun
+  [122] (Normal) Decision made: Kept all logs, scratch files, and the model download strictly inside the project directory rath
+  [123] (Normal) How I implemented it: Verified Docker/Compose/GPU/Ollama versions, resolved a git merge conflict from an untra
+  [124] (Normal) Challenges faced:
+  [125] (List Paragraph) Two background-monitoring shell loops I wrote to watch for the build/model-pull finishing used a process-name 
+  [126] (List Paragraph) `docker compose up -d` had to pull six base images for the first time, which exceeded a 2-minute foreground co
+  [127] (Heading 2) Task 14 — LLM Backend Selection Under Real GPU Constraints
+  [128] (Normal) What I did: Empirically tested both candidate LLMs against the shared GPU's actual available VRAM instead of r
+  [129] (Normal) Decision made: Selected qwen2.5-coder:14b for serving over the originally-planned GPT-OSS 20B. The 20B model (
+  [130] (Normal) How I implemented it: Swapped models via a single .env variable (LLM_MODEL_NAME) plus a `docker compose up -d 
+  [131] (Normal) Challenges faced:
+  [132] (List Paragraph) Diagnosing the GPT-OSS 20B issue meant first ruling out GPU memory as the cause (confirmed 100% GPU, no CPU of
+  [133] (Heading 2) Task 15 — Production Bug Fixes Found During Live Ingestion Testing
+  [134] (Normal) What I did: Ingested two real documents through the admin ingestion path to validate the ingestion → embedding
+  [135] (Normal) Decision made: Fixed both immediately rather than working around them, since either would have surfaced during
+  [136] (Normal) How I implemented it: Worked around (1) immediately by re-ingesting both documents directly against the /admin
+  [137] (Normal) Challenges faced:
+  [138] (List Paragraph) The BM25 bug looked intermittent at first — a full API restart happens to rebuild the index correctly from Pos
+  [139] (List Paragraph) Root-causing the empty is_public flag required bypassing the CLI script entirely and calling the API directly 
+  [140] (Heading 2) Task 16 — Open WebUI Frontend Validation on the Production Server
+  [141] (Normal) What I did: Validated the browser-facing chat experience on the production server for the first time — the lay
+  [142] (Normal) Decision made: Treated the frontend as unverified until proven, which turned out to be correct: the Sparkline 
+  [143] (Normal) How I implemented it: Installed the Pipe Function into the Open WebUI instance and confirmed it registers as a
+  [144] (Normal) Challenges faced:
+  [145] (List Paragraph) The pipe's default backend URL (host.docker.internal:8000) would have resolved to host port 8000 on this share
+  [146] (List Paragraph) Answers rendered in the browser as a sources list with no answer text above it. The pipe read the response's “
+  [147] (List Paragraph) Because retrieval returns the top five chunks and several usually come from the same file, the sources list re
+  [148] (Heading 2) Task 17 — Citation Display Cleanup
+  [149] (Normal) What I did: Reworked how sources are presented in the chat UI after reviewing how the repeated filenames looke
+  [150] (Normal) Decision made: Collapse the sources list to one entry per source document — keeping each document's highest-ra
+  [151] (Normal) How I implemented it: Added a dedupe step in the pipe's answer formatter plus a configurable max_sources_shown
+  [152] (Normal) Challenges faced: Nothing significant.
+  [153] (Heading 1) Week 6 (Aug 11 – Aug 14, 2026)
+  [154] (Heading 2) Task 18 — Root-Cause Analysis: Automatic Routing Between Document RAG and the General LLM
+  [155] (Normal) What I did: Investigated why the assistant replied “I couldn't find this in the available documents” to ordina
+  [156] (Normal) Decision made: Route on retrieval evidence rather than on the wording of the question. The words never reveal 
+  [157] (Normal) How I implemented it: Traced the fault to two independent causes: the intent classifier had no patterns for th
+  [158] (Normal) Challenges faced:
+  [159] (List Paragraph) The full stack had been down since Aug 8; it had to be brought back up before any measurement was possible.
+  [160] (List Paragraph) eval/golden_set.json turned out to be unusable for calibration — it asks about safety policy, leave policy, Q3
+  [161] (Heading 2) Task 19 — Retrieval Quality Defects Found During Threshold Calibration
+  [162] (Normal) What I did: Chased an inconsistency in the calibration data — the same question scoring -6.54 in one run and +
+  [163] (Normal) Decision made: Fix both before setting any routing thresholds. A routing decision is only as stable as the sco
+  [164] (Normal) How I implemented it: First, the Reciprocal Rank Fusion merge was truncating to the reranker's final k before 
+  [165] (Normal) Challenges faced:
+  [166] (List Paragraph) The scoring inconsistency first looked like reranker nondeterminism; isolating it meant comparing candidate po
+  [167] (List Paragraph) Changing the tokenizer silently invalidates every persisted index, which would have degraded recall with no er
+  [168] (Heading 2) Task 20 — Automatic Query Routing (Evidence Gate)
+  [169] (Normal) What I did: Implemented the routing itself, so the single “Sparkline RAG” model in the chat UI answers documen
+  [170] (Normal) Decision made: Three score bands rather than a binary switch: a confident match answers strictly from the docu
+  [171] (Normal) How I implemented it: Split the document agent's retrieval from its answering so the router can inspect retrie
+  [172] (Normal) Challenges faced:
+  [173] (List Paragraph) Moving conversation-history writes into the router risked duplicating or losing a turn, since a refused answer
+  [174] (List Paragraph) Anchoring follow-ups on the previous turn broke as soon as a general question was asked in the middle of a doc
+  [175] (Heading 2) Task 21 — Browser Validation, Open WebUI Task-Request Fix, and Regression Suite
+  [176] (Normal) What I did: Validated the routing through the real browser path rather than the API alone, and built the regre
+  [177] (Normal) Decision made: Treat browser behaviour as the acceptance criterion. Two defects were invisible from the API an
+  [178] (Normal) How I implemented it: Found Open WebUI issuing its own title- and tag-generation requests against the pipe: ea
+  [179] (Normal) Challenges faced:
+  [180] (List Paragraph) The title-generation prompts were indistinguishable from user messages at the API layer; they were only identi
+  [181] (List Paragraph) Chart and export requests were found to be non-functional — the model returns the tool call as message text in
+  [182] (Heading 2) Task 22 — Typo Tolerance Against the Ingested Corpus
+  [183] (Normal) What I did: Made the assistant understand misspelled questions. Measured first: three of four misspelled quest
+  [184] (Normal) Decision made: Corrections may only be drawn from the vocabulary of whatever documents are currently ingested,
+  [185] (Normal) How I implemented it: Layers, cheapest first. Ordinary typos are matched by edit distance, with transposition 
+  [186] (Normal) Challenges faced:
+  [187] (List Paragraph) Against a small technical corpus, ordinary English words absent from the documents were being “corrected” into
+  [188] (List Paragraph) A badly mangled word retrieved the right passages, but the model was still shown the user’s raw typo, did not 
+  [189] (Heading 2) Task 23 — User Accounts and Service-Token Authentication
+  [190] (Normal) What I did: Created working accounts for the six colleagues beginning testing, and removed the shared password
+  [191] (Normal) Decision made: Stop the chat integration impersonating users with a password. It had been logging in as each u
+  [192] (Normal) How I implemented it: Added a service-token route that issues a session for a named user, compared in constant
+  [193] (Normal) Challenges faced:
+  [194] (List Paragraph) Deleting the eleven stale accounts was not possible for two of them: one had uploaded every document and the o
+  [195] (List Paragraph) Access turned out to need three separate things, not one — a backend account, a chat-frontend account, and an 
+  [196] (Heading 2) Task 24 — Document Format Coverage and GPU-Backed Ingestion
+  [197] (Normal) What I did: Made the system accept the file formats the testers actually use, and made ingestion fast enough t
+  [198] (Normal) Decision made: Audit what the system genuinely accepted rather than what it claimed to, and dispatch on each f
+  [199] (Normal) How I implemented it: Macro-enabled Excel was not an accepted format at all, and both pre-2007 formats were li
+  [200] (Normal) Challenges faced:
+  [201] (List Paragraph) A sixteen-megabyte Word report produced 605 text sections and indexed in 37 seconds, while a five-megabyte spr
+  [202] (List Paragraph) The graphics card is shared with the language model, and a real out-of-memory error occurred during testing. T
+  [203] (List Paragraph) No genuine pre-2007 Word file was available anywhere on the server to confirm the success path for that format
+  [204] (Heading 2) Task 25 — Enterprise Integration Contract with Dhruv’s ERP Workstream
+  [205] (Normal) What I did: Resolved the design question Dhruv raised — that much of the ERP content is also described in the 
+  [206] (Normal) Decision made: The choice cannot be made from what a question is about, because both sources are about the sam
+  [207] (Normal) How I implemented it: Replaced the adapter interface’s yes/no capability check with a coverage assessment retu
+  [208] (Normal) Challenges faced:
+  [209] (List Paragraph) His ERP reaches its database over a single shared connection, so every question would be answered with the sam
+  [210] (List Paragraph) The test database his integration points at holds data ending 2026-07-02, so any “last month” question would a
+  [211] (Heading 2) Task 26 — Document Withdrawal, Administrator Chat Access, and Pilot Handbooks
+  [212] (Normal) What I did: Added the ability to remove a document, gave the administrator account a chat login, wrote the han
+  [213] (Normal) Decision made: Removing a document deletes its vectors before its database rows. The vectors are what retrieva
+  [214] (Normal) How I implemented it: A delete endpoint restricted to file administrators, batched so a workbook contributing 
+  [215] (Normal) Challenges faced:
+  [216] (List Paragraph) Per-chat file attachment was still enabled in the chat interface, but attachments are never forwarded to our a
+  [217] (List Paragraph) Making that attachment path actually work was requested but deliberately not attempted during the pilot: pilot
+  [218] (Heading 1) Week 7 (Aug 17 – Aug 21, 2026)
+  [219] (Heading 2) Task 27 — Model Change and Shared-GPU Memory Mitigation
+  [220] (Normal) What I did: Replaced the language model behind the assistant with one suited to the questions it is actually a
+  [221] (Normal) Decision made: Moved from the code-tuned 14B model to the general instruction-tuned model of the same size. Th
+  [222] (Normal) How I implemented it: Since a second model must remain installed permanently, the memory fix could not be dele
+  [223] (Normal) Challenges faced:
+  [224] (List Paragraph) The third tenant’s computer-vision work loads models onto the GPU directly rather than through the model serve
+  [225] (List Paragraph) A test query showed the model running 26% on the CPU despite the cap, indicating something still holds memory 
+  [226] (Heading 2) Task 28 — Moving Development off the Shared Server
+  [227] (Normal) What I did: Replaced the remote-desktop development workflow with an SSH tunnel, so the laptop edits code whil
+  [228] (Normal) Decision made: The shared machine has 7.9 GB of memory and one GPU serving three teams, and driving it through
+  [229] (Normal) How I implemented it: Forwarded the model server, database, cache, vector store and object store to matching l
+  [230] (Normal) Challenges faced:
+  [231] (List Paragraph) The laptop already had an unused copy of the model server running on the same port, holding no models. Left in
+  [232] (List Paragraph) The library used for embeddings would not load on the laptop. Ruled out corrupted files by checksum against th
+  [233] (Heading 2) Task 29 — Credential Removal and Network Exposure Audit
+  [234] (Normal) What I did: Removed a working administrator password from the source code, rotated the two secrets the system 
+  [235] (Normal) Decision made: The administrator account can ingest and withdraw documents for every user, and its password wa
+  [236] (Normal) How I implemented it: Rotated the service token across all three places that must agree — the configuration fi
+  [237] (Normal) Challenges faced:
+  [238] (List Paragraph) Testing from the laptop showed that the container platform publishes ports past the host firewall, leaving the
+  [239] (List Paragraph) I had earlier printed the service token in full while reading the configuration, because the pattern meant to 
+======================================================================
+deployment_status_update.docx
+  [  0] (Normal) Code Deployment Status Update
+  [  1] (Normal) Intern: Sidharth  |  Project: Sparkline AI Assistant
+  [  2] (Normal) Last updated: 2026-08-18
+  [  3] (Heading 1) Completed
+  [  4] (List Paragraph) Full backend architecture built and internally tested — 51 files across infrastructure, ingestion, retrieval, 
+  [  5] (List Paragraph) Docker Compose stack live and verified on the production GPU server (SEPL-PC): PostgreSQL, Redis, MinIO, Qdran
+  [  6] (List Paragraph) FastAPI gateway running with auth (JWT), routing, and document-processing endpoints, documented via auto-gener
+  [  7] (List Paragraph) Document ingestion pipeline fully functional and validated end-to-end against real documents: upload → text ex
+  [  8] (List Paragraph) Hybrid retrieval pipeline live: dense (Qdrant) + BM25 keyword search merged via Reciprocal Rank Fusion, with c
+  [  9] (List Paragraph) PDP/PEP access control (default-deny ABAC) enforced at retrieval time via Qdrant payload filters
+  [ 10] (List Paragraph) GPU-backed LLM serving is live: qwen2.5-coder:14b running 100% on the RTX 5060 Ti, averaging ~1.4-second end-t
+  [ 11] (List Paragraph) Open WebUI connected as the chat frontend via a custom Pipe Function, routing every message through access con
+  [ 12] (List Paragraph) First real-document RAG validation completed: 2 stakeholder documents ingested (93 chunks), verified via live 
+  [ 13] (List Paragraph) Four bugs found and fixed during validation: a document-visibility access-control bug, a background-task datab
+  [ 14] (List Paragraph) Stakeholder demo script prepared and updated to cover the now-live LLM chat flow, not just infrastructure
+  [ 15] (List Paragraph) Open WebUI browser chat validated end-to-end on the production server: “Sparkline RAG” selectable as its own m
+  [ 16] (List Paragraph) Citation display refined to list one source per document rather than one per retrieved chunk, with the full pe
+  [ 17] (List Paragraph) Automatic query routing is live: the assistant decides by itself whether a question is answerable from the ing
+  [ 18] (List Paragraph) Routing thresholds were measured rather than guessed, using a calibration harness (eval/calibrate_router.py) r
+  [ 19] (List Paragraph) Two retrieval-quality defects fixed: rank fusion was truncating the reranker's candidate pool to the final ans
+  [ 20] (List Paragraph) Open WebUI's internal title- and tag-generation requests no longer reach the RAG pipeline; each was consuming 
+  [ 21] (List Paragraph) Answers now state their provenance in the browser — whether they came from Sparkline documents, partly from do
+  [ 22] (List Paragraph) Automated test coverage expanded: 45 unit tests (from 10) plus a 17-check live regression suite covering sessi
+  [ 23] (List Paragraph) Rollback path in place: ROUTER_MODE=legacy in .env restores the previous always-RAG behaviour without a code c
+  [ 24] (List Paragraph) Typo tolerance is live: misspelled questions are corrected before retrieval, using only the vocabulary of the 
+  [ 25] (List Paragraph) The shared password hardcoded in the Open WebUI integration has been removed. The chat front end now authentic
+  [ 26] (List Paragraph) User account management is live: create a user, change your own password, and an administrator password reset.
+  [ 27] (List Paragraph) Six pilot testers provisioned end-to-end across both systems (backend account, chat-frontend account and expli
+  [ 28] (List Paragraph) Document format coverage widened from four types to ten: PDF including OCR for scanned pages, DOCX, legacy DOC
+  [ 29] (List Paragraph) Embedding runs on the GPU: a 4.93 MB, 20-sheet, macro-enabled workbook ingests in 58 seconds, against roughly 
+  [ 30] (List Paragraph) A per-document index ceiling is in place, spread proportionally across a file's sheets or pages so no sheet si
+  [ 31] (List Paragraph) The enterprise integration contract with Dhruv's ERP workstream is agreed and documented (ENTERPRISE_ROUTING_C
+  [ 32] (List Paragraph) Automated coverage now stands at 75 unit tests and a 22-check live regression suite, up from 45 and 17
+  [ 33] (List Paragraph) Documents can now be withdrawn. An administrator can remove a document and every version of it from the assist
+  [ 34] (List Paragraph) The administrator account can now be used in the chat interface as well as through the API, rather than being 
+  [ 35] (List Paragraph) Per-chat file attachment has been switched off in the chat interface for the pilot. The control was visible bu
+  [ 36] (List Paragraph) A tester handbook and a separate administrator guide are written and committed to the repository
+  [ 37] (List Paragraph) The serving model has moved off the code-specialised variant to qwen2.5:14b, the general instruction-tuned mod
+  [ 38] (List Paragraph) GPT-OSS 20B has been deleted, recovering 15 GB. It was rejected on 2026-08-07 for returning empty responses an
+  [ 39] (List Paragraph) GPU memory contention has been mitigated by capping the host model server to one resident model. The code-tune
+  [ 40] (List Paragraph) Development has moved off remote desktop onto an SSH tunnel. The laptop is now an editor and all computation s
+  [ 41] (List Paragraph) The operational knowledge the code does not reveal is now written down (CLAUDE.md, REMOTE_DEV.md): that the mo
+  [ 42] (List Paragraph) The administrator password is no longer in the source. It was a literal default in the ingestion CLI and there
+  [ 43] (Heading 1) Pending
+  [ 44] (List Paragraph) Ingestion and retrieval testing against real Sparkline documents at scale, as more content is provided by stak
+  [ 45] (List Paragraph) Activating real per-user ABAC restrictions, pending department/designation data from HR for the 10 pilot users
+  [ 46] (List Paragraph) Live RAGAS evaluation against real documents and real queries to establish baseline faithfulness, relevance, a
+  [ 47] (List Paragraph) Prompt-injection / adversarial security testing against the now-live pipeline (test cases were written earlier
+  [ 48] (List Paragraph) Full agent/tool-calling suite (chart generation, Word/Excel export, Python sandbox) is built but not functiona
+  [ 49] (List Paragraph) Per-user permissions on the ERP side before any of that data is exposed: the integration reaches its database 
+  [ 50] (List Paragraph) Validation of the legacy .doc path against a genuine pre-2007 Word file — the reader is installed and wired an
+  [ 51] (List Paragraph) Per-chat file upload with session-scoped retrieval. Blocked by access control rather than by parsing: pilot us
+  [ 52] (List Paragraph) Moving document upload into Open WebUI, so adding and withdrawing a document happens in the same interface as 
+  [ 53] (List Paragraph) Closing the network exposure. Docker publishes container ports past the host firewall, so Postgres, Redis, Qdr
+  [ 54] (List Paragraph) Resolving the routing band. ROUTER_RAG_SCORE_HIGH and _LOW are both set to -6.0, which makes the blended band 
+  [ 55] (Heading 1) Blockers
+  [ 56] (List Paragraph) None critical as of 2026-08-18 — the GPU server blocker is resolved (RTX 5060 Ti provisioned and in active use
+  [ 57] (List Paragraph) Real document content and HR department/designation data are still pending from stakeholders — not an engineer
+  [ 58] (List Paragraph) The ERP integration cannot be exposed to users until per-user permissions exist on that side. This does not bl
+======================================================================
+1_month_roadmap.docx
+  [  0] (Normal) Weekly Execution Plan — July 27 to August 27, 2026
+  [  1] (Normal) Intern: Sidharth  |  Project: Sparkline AI Assistant
+  [  3] (Heading 1) Week 1 (Jul 27 – Jul 31, 2026)
+  [  4] (List Paragraph) Fix all the pertaining docker issues.
+  [  5] (List Paragraph) Demonstrate the completed backend to Shruti mam (upload → chunk → embed → store in MinIO/Qdrant with access-co
+  [  6] (List Paragraph) Work on the LLM research and optimal model selection.
+  [  8] (Heading 1) Week 2 (Aug 3 – Aug 7, 2026)
+  [  9] (List Paragraph) Begin internal documentation: architecture overview and setup guide
+  [ 10] (List Paragraph) Author prompt-injection / adversarial test cases for the RAG and tool-calling pipeline (written now, executed 
+  [ 11] (List Paragraph) Run any real sample documents received from stakeholders through the ingestion pipeline to validate parsing/ch
+  [ 12] (List Paragraph) Sync with Dhruv on the shared audit-log schema and user/role source of truth ahead of enterprise-adapter integ
+  [ 13] (List Paragraph) Connected Open WebUI as the actual chat frontend — built a custom Pipe Function (sparkline_pipeline.py) so “Sp
+  [ 14] (List Paragraph) Deployed the full stack for the first time on the shared production GPU server (Ubuntu 24.04, RTX 5060 Ti); th
+  [ 15] (List Paragraph) Benchmarked GPT-OSS 20B vs. qwen2.5-coder:14b against real (shared) GPU memory and picked qwen2.5-coder:14b fo
+  [ 16] (List Paragraph) Ingested the first real documents end-to-end (upload → chunk → embed → Qdrant → hybrid retrieval → rerank → ci
+  [ 17] (List Paragraph) Found and fixed four bugs across the ingestion and frontend paths: a document-visibility bug (--public flag no
+  [ 18] (List Paragraph) Validated the Open WebUI browser chat path on the production server end-to-end, including access control, retr
+  [ 19] (List Paragraph) Cleaned up citation display so sources list one entry per document rather than one per retrieved chunk, while 
+  [ 21] (Heading 1) Week 3 (Aug 10 – Aug 14, 2026)
+  [ 22] (Normal) GPU server arrived Aug 7 (Week 2) — carried-forward work:
+  [ 23] (List Paragraph) Revisit GPT-OSS 20B once its empty-response issue is root-caused, or evaluate a replacement candidate model; q
+  [ 24] (List Paragraph) Continue security test-case authoring and documentation; re-escalate GPU timeline
+  [ 25] (List Paragraph) Populate any HR department/designation data received against pilot users; begin transitioning off blanket pilo
+  [ 26] (List Paragraph) Root-caused why every chat message was being answered by the document RAG agent regardless of the question: th
+  [ 27] (List Paragraph) Fixed two retrieval-quality defects surfaced by that calibration — fusion truncating the reranker's candidate 
+  [ 28] (List Paragraph) Implemented automatic routing between the document RAG and general LLM agents, with a blended mode for partial
+  [ 29] (List Paragraph) Validated the routing through the Open WebUI browser path, stopped Open WebUI's internal title/tag-generation 
+  [ 30] (List Paragraph) Built typo tolerance so misspelled questions still reach the documents: corrections are drawn only from the vo
+  [ 31] (List Paragraph) Reworked user accounts and authentication: removed a shared password that was hardcoded in the chat integratio
+  [ 32] (List Paragraph) Widened accepted document formats from four to ten, adding macro-enabled Excel, the pre-2007 Word and Excel fo
+  [ 33] (List Paragraph) Moved embedding onto the GPU after tracing an hour-long ingestion to the container never having been granted a
+  [ 34] (List Paragraph) Agreed the integration contract with Dhruv's ERP workstream — routing on what a question asks for rather than 
+  [ 35] (List Paragraph) Release to the six pilot testers, moved from Aug 14 to the week of Aug 17. The extra time goes into loading th
+  [ 36] (Heading 1) Week 4 + 5 (Aug 17 – Aug 27, 2026)
+  [ 37] (List Paragraph) Swap the Open WebUI pipeline over from the CPU fallback model to the live GPU-served LLM once the RTX 5060 Ti 
+  [ 38] (List Paragraph) Run first end-to-end chat tests through Open WebUI, including citation accuracy checks
+  [ 39] (List Paragraph) Begin running the RAGAS harness against available real documents/queries; record baseline faithfulness, releva
+  [ 40] (List Paragraph) Execute the authored prompt-injection/security test cases against the now-live pipeline
+  [ 41] (List Paragraph) Document any remaining blockers heading into the Security, Coordination & Hardening phase (Month 3)
+  [ 44] (List Paragraph) Per-chat file upload with session-scoped retrieval — let a user attach a file to a conversation and question i
+  [ 45] (List Paragraph) Move document upload and withdrawal into Open WebUI, so they happen in the same interface as the chat rather t
+  [ 46] (List Paragraph) Completed Aug 18 — Moved the serving model off the code-specialised variant to qwen2.5:14b, the general instru
+  [ 47] (List Paragraph) Completed Aug 18 — Mitigated the shared-GPU memory contention by capping the host model server to one resident
+  [ 48] (List Paragraph) Completed Aug 18 — Moved development off the shared server onto an SSH tunnel from a laptop, after remote-desk
+  [ 49] (List Paragraph) Completed Aug 18 — Wrote down the operational knowledge the code does not reveal (CLAUDE.md, REMOTE_DEV.md): t
+  [ 50] (List Paragraph) Completed Aug 18 — Removed the administrator password from the source tree, where it was a literal default and
+  [ 51] (List Paragraph) Found Aug 18, open — Docker publishes container ports past the host firewall, leaving Postgres, Redis, Qdrant,
+  [ 52] (List Paragraph) Carried forward — the routing band is misconfigured: ROUTER_RAG_SCORE_HIGH and _LOW are both -6.0, so the blen
+======================================================================
+3_month_roadmap.docx
+  [  0] (Normal) Sparkline — 3-Month Project Roadmap
+  [  1] (Normal) Intern: Sidharth  |  Project: Sparkline AI Assistant
+  [  3] (Heading 1) Month 1: Full System Build & Live LLM Integration (Jul 8 – Aug 7, 2026)
+  [  4] (Normal) Full System Plan and Build  (Weeks 1–3: Jul 8 – Jul 24, 2026)
+  [  6] (List Paragraph) Finalized system architecture: single-entry FastAPI gateway routing to General LLM / Document RAG / Enterprise
+  [  7] (List Paragraph) Stood up full Docker Compose stack — PostgreSQL, Redis, MinIO, Qdrant — with all-singleton service wrappers (c
+  [  8] (List Paragraph) Designed and implemented database schema: users, documents, document versions (non-destructive versioning), ch
+  [  9] (List Paragraph) Built document parsing pipeline for PDF, Word, and Excel (pdfplumber, PyMuPDF, python-docx, openpyxl) with Tes
+  [ 10] (List Paragraph) Built the FastAPI gateway's full route/middleware layer: OpenAI-compatible chat endpoint, ingestion endpoint, 
+  [ 12] (Normal) Live LLM Integration & Real-Data Validation (Jul 27 – Aug 7, 2026) — Completed
+  [ 14] (List Paragraph) Build token-aware chunking (tiktoken) and a BM25 keyword index alongside the embedding pipeline (BAAI/bge-larg
+  [ 15] (List Paragraph) Implement hybrid retrieval: dense (Qdrant) + sparse (BM25) merged via Reciprocal Rank Fusion, with cross-encod
+  [ 16] (List Paragraph) Build the OpenAI-compatible LLM client and two-step query router, plus all three agents (General, Document RAG
+  [ 17] (List Paragraph) Build the tool-calling suite: sandboxed chart generation (matplotlib/pandas), Word/Excel export (python-docx/o
+  [ 18] (List Paragraph) Design and implement PDP/PEP access control (ABAC): default-deny baseline, pilot-user pass-through, Qdrant fil
+  [ 19] (List Paragraph) Evaluated GPT-OSS 20B and qwen2.5-coder:14b on the now-available RTX 5060 Ti under real (shared) memory constr
+  [ 20] (List Paragraph) Ingest real Sparkline documents as they're provided by stakeholders across departments
+  [ 21] (List Paragraph) Receive department/designation data from HR and populate it against the 10 pilot users; transition pilot users
+  [ 22] (List Paragraph) Run the RAGAS harness against real documents and real queries; establish baseline faithfulness, answer relevan
+  [ 23] (List Paragraph) Validated the full chat flow end-to-end with the production LLM and real documents — both at the API level and
+  [ 27] (Heading 1) Month 2: Security, Coordination, Hardening & Performance Tuning (Aug 8 – Sep 6, 2026)
+  [ 29] (List Paragraph) Build the Open WebUI Pipeline integration — Completed. Implemented via a custom Pipe Function rather than a Fi
+  [ 30] (List Paragraph) Pulled a lightweight llama3.2:1b model into Ollama as a CPU-friendly stand-in so the full pipeline could be te
+  [ 31] (List Paragraph) Build an admin CLI for bulk document ingestion
+  [ 32] (List Paragraph) Build the RAGAS evaluation harness and a 10-query golden set, plus a full offline unit-test suite (10 tests) a
+  [ 34] (Normal) Security, Coordination & Hardening (Aug 8 – Aug 21, 2026
+  [ 35] (Normal) )
+  [ 36] (List Paragraph) Conduct prompt-injection and adversarial security testing against the RAG/agent and tool-calling pipeline
+  [ 37] (List Paragraph) Coordinate the integration contract with Dhruv's enterprise-adapter workstream now that the shared gateway and
+  [ 38] (List Paragraph) Expand test coverage beyond the smoke test into fuller integration tests; triage and fix edge cases surfaced b
+  [ 39] (List Paragraph) Begin internal documentation: architecture overview, setup guide, known limitations
+  [ 41] (List Paragraph) Delivered automatic query routing between the Document RAG and General LLM agents — Completed. Retrieval now r
+  [ 42] (List Paragraph) Fixed two retrieval defects found while calibrating the routing thresholds — Completed. Rank fusion was trunca
+  [ 43] (List Paragraph) Expanded automated test coverage as part of the routing work — unit tests from 10 to 45, plus a 17-check live 
+  [ 44] (List Paragraph) Delivered typo tolerance for the pilot — Completed. Misspelled questions about ingested documents were being a
+  [ 45] (List Paragraph) Removed a shared hardcoded credential and added real account management — Completed. The chat integration had 
+  [ 46] (List Paragraph) Widened document format coverage from four types to ten — Completed. Added macro-enabled Excel, the pre-2007 W
+  [ 47] (List Paragraph) Moved embedding onto the GPU — Completed, and directly advancing the Performance Tuning phase below. Ingestion
+  [ 48] (List Paragraph) Coordinated the integration contract with Dhruv's enterprise-adapter workstream — Completed, closing the coord
+  [ 49] (Normal) Performance Tuning & Production Path Validation (Aug 22 – Sep 6, 2026)
+  [ 50] (List Paragraph) Load and performance testing under concurrent multi-user access; profile retrieval latency, LLM throughput, an
+  [ 51] (List Paragraph) Validate the production serving path: confirm the config-only Ollama → vLLM swap works cleanly under real load
+  [ 52] (List Paragraph) Expand the pilot group as HR data coverage grows
+  [ 53] (List Paragraph) Wrap and stabilize the FastAPI backend layer: error handling, input validation, logging consistency
+  [ 55] (List Paragraph) Release to the six pilot testers — moved from Aug 14 to the week of Aug 17, with the extra time spent loading 
+  [ 56] (List Paragraph) Per-chat file upload with session-scoped retrieval, so a user can attach a document to a conversation and ques
+  [ 57] (List Paragraph) Move document upload and withdrawal into Open WebUI, replacing the API documentation page as the administrator
+  [ 58] (Heading 1) Month 3: Broader Rollout, Reliability, Documentation & Handover (Sep 7 – Oct 6, 2026)
+  [ 59] (Normal) Broader Rollout & Reliability (Sep 7 – Sep 20, 2026)
+  [ 61] (List Paragraph) Extend rollout to additional departments as access data and stakeholder content continue to arrive
+  [ 62] (List Paragraph) Add basic monitoring/observability for query latency, retrieval quality, and failure rates
+  [ 63] (List Paragraph) Refine access control and retrieval behavior based on real-world pilot feedback at broader scale
+  [ 64] (List Paragraph) Continue addressing bugs and edge cases surfaced from expanded usage
+  [ 66] (Normal) Documentation, Handover & Scalability Writeup (Sep 21 – Oct 6, 2026)
+  [ 68] (List Paragraph) Finalize architecture documentation and a GitHub-ready project writeup/demo
+  [ 69] (List Paragraph) Document and validate the scalability path — confirm each component (LLM serving, vector DB, storage) can move
+  [ 70] (List Paragraph) Final presentation/demo preparation for stakeholders
+  [ 71] (List Paragraph) Personal: consolidate learnings into a single document — system design decisions, tradeoffs made, and reasonin

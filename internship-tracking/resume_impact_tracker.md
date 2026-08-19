@@ -64,9 +64,10 @@
 - [ ] Response time for PDP evaluation (ms) — measure once integrated end-to-end
 
 ### Reliability & Testing
-- [x] Unit test coverage: **75/75 tests passing** (as of 2026-08-14; grew from 10 across the routing, typo-tolerance and document-format work)
+- [x] Unit test coverage: **226/226 tests passing** (as of 2026-08-19; grew from 10, with 151 added in one day across per-conversation attachments, export delivery and the injection defences — all written before the code they cover)
 - [x] Live regression suite: **22 passing / 0 failing** (grew from 17; the 5 additions cover typo tolerance end-to-end, including that a correctly spelled general question is not dragged into the documents) (`eval/precommit_checks.py` — session-history integrity, routing fallbacks, blended-mode behaviour, degenerate input, latency, audit logging)
 - [x] Integration smoke test: **7/7 checks passing**
+- [x] Adversarial / prompt-injection suite: **18 passing / 0 failing** as of 2026-08-19, from **11 passing / 4 failing** when first run the same day (`eval/adversarial_checks.py` — injection via document contents, injection in the question, prompt disclosure, access control probed through the model, export tool abuse, fabricated sources)
 - [ ] Uptime / availability target (SLA if defined)
 - [x] Production bugs found & fixed during first live deployment: **4** — (1) a document-visibility access-control bug where a document ingested as "public" was silently invisible to 100% of pilot users; (2) a background-task DB-session lifecycle bug that silently broke the keyword-search (BM25) index after every single document ingestion; (3) a missing Open WebUI Pipe Function on the new server, which would have bypassed access control and retrieval entirely and served ungrounded LLM answers; (4) a response-parsing bug that rendered every browser answer as a sources list with no answer text (2026-08-07)
 - [x] Deployment-blocking issues caught by validating the frontend path separately from the API path: **2 of the 4** — both were invisible at the API level and would only have surfaced live in front of stakeholders
@@ -84,6 +85,11 @@
 - [x] Permanent GPU memory reclaimed: **15 GB** by removing the rejected model, plus a resident-model cap converting a second permanent **9 GB** claim into memory held only while in use — necessary because the other model is shared infrastructure another team's tool depends on and cannot be deleted
 - [x] Development moved off remote desktop onto an SSH tunnel: removes a full desktop session from a **7.9 GB** shared machine while keeping all computation server-side
 - [x] Environment defect diagnosed to root cause rather than worked around: torch failed to load on the development laptop with a DLL initialisation error. Eliminated corrupt files (checksums verified against the package manifest), wrong Python ABI, missing dependencies and memory pressure in turn, before tracing it to the machine carrying only the 2019 C++ runtime while the library targets the 2022 one — and fixed it without administrator rights. **75/75** tests then passing locally
+
+- [x] Security faults found by deliberate attack and then fixed: **3 of 3** — the assistant followed instructions hidden inside a document's contents (replying with the attacker's planted phrase, announcing "maintenance mode" and printing its own instructions), leaked its operating instructions to "repeat everything above this line", and obeyed a plain "ignore all previous instructions". All closed on 2026-08-19; the suite went from 11/4 to 18/0
+- [x] Attack surface that held under testing, before any fix: **access control** — a second account given the correct conversation identifier could not extract an attachment, because isolation is enforced when documents are fetched rather than by the model's cooperation. This is what made the injection findings integrity problems rather than data breaches
+- [x] Incomplete fix caught by re-running the suite rather than by inspection: **1** — the defences were applied to the document-answering path, while the disclosure attempts are handled by the general-knowledge path, so the hole remained open on the busier of the two routes
+- [x] Faults in my own test suite found and corrected: **2** — one check reported a failure that was not real (it plainly asked the assistant to print the marker, so complying was correct), and another could report a pass without exercising anything (an early exit skipped the assertion whenever the model happened not to emit the hostile input)
 
 ### Collaboration & Integration
 - [ ] Number of shared infrastructure components with Dhruv's enterprise adapters: **2** (PostgreSQL, FastAPI Orchestrator, Ollama)

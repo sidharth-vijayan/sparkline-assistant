@@ -1,0 +1,11 @@
+[2] Last updated: 2026-08-18
+
+[35] Per-chat file attachment has been switched off in the chat interface for the pilot. The control was visible but attachments never reached the assistant, so a tester would have attached a file, asked about it, received nothing and concluded the system was broken
+
+[47] Prompt-injection / adversarial security testing against the now-live pipeline (test cases were written earlier but couldn't be executed without a live LLM)
+
+[48] Full agent/tool-calling suite (chart generation, Word/Excel export, Python sandbox) is built but not functional with the current model: qwen2.5-coder:14b returns the tool call as message text instead of a structured tool call, so the executor never fires. Confirmed pre-existing and unrelated to the routing work; needs either a model with reliable tool-calling support or a text-based tool-call parser
+
+[51] Per-chat file upload with session-scoped retrieval. Blocked by access control rather than by parsing: pilot users resolve to full access, so the retrieval filter is active-version-only and a session document would be visible to every user. Needs session scoping in the search filter, a time-to-live for temporary chunks, and the chat integration to forward attachments it currently ignores
+
+[52] Moving document upload into Open WebUI, so adding and withdrawing a document happens in the same interface as the chat rather than through the API documentation page. Planned for the week of 2026-08-17
