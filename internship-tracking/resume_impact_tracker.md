@@ -232,15 +232,17 @@ These are templates — update the `X` values as you measure them:
 | 2026-08-14 | Document withdrawal (undo) added | Administrator can remove a document and all versions; vectors deleted before database rows so a partial failure leaves invisible orphans, not retrievable ones |
 | 2026-08-14 | Pilot release rescheduled to week of 2026-08-17 | Extra time goes to loading the testers' real documents and re-measuring routing thresholds against them |
 | 2026-08-14 | Enterprise routing contract agreed with Dhruv | Route on question type, not subject; adapters self-assess coverage; no ERP routing built until real data and per-user permissions exist |
+| 2026-08-18 | Serving model switched to the general instruct variant; export feature re-diagnosed | The code-tuned model was the wrong instrument for policy and HR prose. Export was recorded as broken tool-calling; layer-by-layer testing showed only delivery is missing |
+| 2026-08-19 | Per-chat attachments delivered with isolation proven under a live model | Separate store rather than tagging; no expiry, reclamation by reconciliation; attachments given a guaranteed share of answer context rather than a score bonus |
 | TBD | RAGAS evaluation run | Will populate faithfulness / relevance / precision metrics. **Must run after the routing change** — baselines measured under always-RAG behaviour would be invalid |
 
 ---
 
 ## 🔮 Upcoming High-Impact Work (good for resume)
 
-- **Tool-calling repair (charts / Word / Excel export)** — the suite is built but non-functional: qwen2.5-coder:14b returns tool calls as message text rather than structured calls, so the executor never fires. Needs either a model with reliable tool-calling or a text-based parser — a self-contained, demonstrable piece of work
+- **File export delivery** — the earlier diagnosis was wrong. Tested layer by layer on 2026-08-18: the model emits correct tool calls (3 of 4 probes), the generators produce valid .docx/.xlsx that reopen cleanly, and the API returns them. The break is delivery — the frontend layer forwards only answer text, so the file is built and discarded while the model announces success. Needs object storage, an authenticated download route, and a link in the reply. Chart generation still unverified
 - **Move document upload into Open WebUI (planned next week)** — the administrator currently uploads through the FastAPI docs page on port 18000, which works but sits outside the interface everyone else uses. Migrating it into Open WebUI itself puts adding and withdrawing a document in the same place as the chat
-- **Per-chat file upload with session-scoped retrieval** — let a user attach a file to a conversation and ask questions about it. Blocked today by access control rather than by parsing: pilot users resolve to full access, so the retrieval filter is active-version-only and any session document would be visible to every user. Needs session scoping in the Qdrant filter, a time-to-live for temporary chunks, and the pipeline to forward attachments it currently ignores. Roughly 1–2 days, and deliberately not attempted during a live pilot since it changes the code path that decides who can see what
+- **Per-chat file upload with session-scoped retrieval — BUILT 2026-08-19.** Delivered end to end: upload, isolated retrieval, admin listing, deletion, and a reclamation sweep. Proven with a live model that a second user supplying the correct conversation ID retrieves nothing. Remaining: switch the upload control on in the chat interface, a one-setting change held back for deliberate review
 - **Switch the serving model off the code-specialised variant** — qwen2.5-coder:14b is tuned for programming and is being used as a general assistant, which is the root cause of both the broken tool-calling and weak general knowledge; a general instruct model of the same size is a one-line change that addresses both, and does not affect routing since the relevance scores come from a separate cross-encoder on CPU
 - **Per-user permissions before any ERP data is exposed** — the ERP integration reaches its database over a single shared connection, so wiring it in as-is would bypass the document-level access control entirely
 - **Validate the legacy .doc path against a genuine pre-2007 Word file** — the reader is installed and wired, and failure is graceful, but no real .doc file was available to confirm the success path
@@ -250,3 +252,29 @@ These are templates — update the `X` values as you measure them:
 - **Streaming responses in Open WebUI pipeline** — UX improvement, measurable latency reduction
 - **RAGAS evaluation run** — will produce the hard numbers for resume bullets
 - **vLLM + GPU integration** — production-grade LLM serving, throughput benchmarks
+
+---
+
+## 🧩 Challenges Faced and Key Decisions Made
+
+*Updated at the end of each working day. Kept short on purpose.*
+
+### Week of 2026-08-17
+
+**Challenges**
+
+- One 16 GB GPU shared by three unrelated workloads, two of them other people's. The computer-vision stack loads the card directly, so it is invisible to the model server's own reporting and only shows up in the driver's.
+- A model the whole company depends on could not be removed to free memory, so the saving had to come from capping how many models stay resident instead.
+- Two defects that looked like one: the export feature was recorded as a broken model integration, but testing each layer separately showed the model and the file generators both work and only delivery is missing.
+- A feature can pass review and its own tests and still be wrong. Attachment retrieval looked correct until it was tried with the vague questions people actually ask, which returned the wrong documents entirely.
+- The chat interface re-sends a conversation's whole file list on every message, so the obvious implementation would re-process the same document on every turn.
+
+**Key decisions**
+
+- Keep per-conversation files in a **separate vector collection** rather than tagging them in the main one, so a leak is structurally impossible instead of depending on every filter being correct. Every account in the system currently resolves to full access, which made this the deciding factor.
+- **No expiry on attachments.** A file disappearing mid-conversation is worse than storage cost. Reclamation is instead a sweep that compares live conversations against what is held — with three refuse-to-act safeguards, since the failure mode is deleting everything rather than deleting too little.
+- Give attachments a **guaranteed share of the answer context, not a score bonus**. One file cannot out-compete a whole corpus on a vague question, and boosting scores would have distorted genuine relevance.
+- Decide from **evidence, not intent**: an attachment overrides the usual confidence threshold only when it was actually retrieved, so an unrelated later question in the same conversation still answers normally.
+- Send the **original file** to our own readers rather than the interface's extracted text, because generic extraction flattens spreadsheets and the document set is spreadsheet-heavy.
+- Fixed conversation identity to the conversation rather than the user. This also resolved a live defect where one conversation's history was being read back as context in another.
+- Hold the interface's upload control **off** until the work is reviewed, even though the feature is finished.
