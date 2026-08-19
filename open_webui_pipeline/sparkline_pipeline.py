@@ -94,6 +94,16 @@ class Pipe:
             )
             return
 
+        # Forward any newly attached files before answering, so the question
+        # can be answered from a file attached in this same turn. Uploading is
+        # idempotent per chat: the API is asked which files it already holds.
+        if __files__ and __chat_id__:
+            attached = self._forward_attachments(
+                __files__, __chat_id__, state["token"]
+            )
+            if attached:
+                yield "\n*📎 Reading {}…*\n\n".format(", ".join(attached))
+
         # Call orchestrator with auto-retry on 401
         try:
             result = self._call_orchestrator(
@@ -120,6 +130,151 @@ class Pipe:
             )
 
         yield self._format_answer(answer, citations, agent_type)
+
+    # ── Attachments ───────────────────────────────────────────────────────
+
+    # Entry types that can carry a document. A temporary chat upload arrives as
+    # "text", not "file" — verified against Open WebUI 0.11.0's
+    # retrieval/utils.py, which reads item["file"]["data"]["content"] for it.
+    ATTACHMENT_TYPES = ("text", "file", None)
+
+    @staticmethod
+    def _file_info(item: dict) -> Optional[dict]:
+        """
+        Pull what we need out of one Open WebUI attachment entry.
+
+        Returns None for anything we cannot or should not send: images, entries
+        with no identifier, and entries carrying neither a readable path nor
+        extracted text. Returning None rather than raising matters — one odd
+        entry must not stop the other attachments being forwarded.
+        """
+        if not isinstance(item, dict):
+            return None
+        if item.get("type") not in Pipe.ATTACHMENT_TYPES:
+            return None
+
+        nested = item.get("file") or {}
+        file_id = item.get("id") or nested.get("id")
+        if not file_id:
+            return None
+
+        name = (
+            item.get("name")
+            or nested.get("filename")
+            or (nested.get("meta") or {}).get("name")
+        )
+        path = nested.get("path")
+        content = (nested.get("data") or {}).get("content") or item.get("content")
+
+        # Nothing to send.
+        if not path and not content:
+            return None
+
+        return {
+            "id": str(file_id),
+            "name": name or f"attachment-{file_id}",
+            "path": path,
+            "content": content,
+        }
+
+    @staticmethod
+    def _pending_attachments(files, already_held) -> list:
+        """
+        The attachments this chat does not already hold.
+
+        Open WebUI re-sends a chat's entire file list on every message, not
+        just the turn a file was attached, so without this the same document is
+        parsed, embedded and stored again on every single turn.
+        """
+        pending = []
+        for item in files or []:
+            info = Pipe._file_info(item)
+            if info and info["id"] not in already_held:
+                pending.append(info)
+        return pending
+
+    def _already_attached(self, chat_id: str, token: str) -> set:
+        """Ask the API which of this chat's files it already holds."""
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.get(
+                    f"{self.valves.sparkline_api_url}/session/documents/source-files",
+                    headers={"Authorization": f"Bearer {token}"},
+                    params={"chat_id": chat_id},
+                )
+                if resp.status_code == 200:
+                    return set(resp.json().get("source_file_ids", []))
+                print(f"[SparklinePipe] source-files returned {resp.status_code}")
+        except Exception as e:
+            print(f"[SparklinePipe] source-files lookup failed: {e}")
+        # Unknown means "assume held" rather than "assume none": re-uploading a
+        # document on every turn is worse than skipping one attachment.
+        return None
+
+    def _forward_attachments(self, files, chat_id: str, token: str) -> list:
+        """
+        Upload any attachments this chat does not already hold.
+
+        Returns the names actually uploaded, for the status line. Failures are
+        reported but never raise — a chat must still answer if an attachment
+        could not be stored.
+        """
+        if not files or not chat_id or not token:
+            return []
+
+        already = self._already_attached(chat_id, token)
+        if already is None:
+            return []
+
+        uploaded = []
+        for info in self._pending_attachments(files, already):
+            payload = self._read_attachment(info)
+            if payload is None:
+                continue
+            filename, blob = payload
+            try:
+                with httpx.Client(timeout=self.valves.request_timeout_seconds) as client:
+                    resp = client.post(
+                        f"{self.valves.sparkline_api_url}/session/documents",
+                        headers={"Authorization": f"Bearer {token}"},
+                        files={"file": (filename, blob)},
+                        data={"chat_id": chat_id, "source_file_id": info["id"]},
+                    )
+                if resp.status_code == 201:
+                    uploaded.append(filename)
+                else:
+                    print(
+                        f"[SparklinePipe] attach '{filename}' returned "
+                        f"{resp.status_code}: {resp.text[:200]}"
+                    )
+            except Exception as e:
+                print(f"[SparklinePipe] attach '{filename}' failed: {e}")
+        return uploaded
+
+    @staticmethod
+    def _read_attachment(info: dict):
+        """
+        Get the bytes to send, preferring the file on disk.
+
+        The raw file goes through Sparkline's own parsers, which read
+        spreadsheets far better than generic text extraction. Open WebUI's
+        already-extracted text is the fallback for when the file is not
+        reachable on this filesystem — remote storage, for instance.
+        """
+        path = info.get("path")
+        if path:
+            try:
+                with open(path, "rb") as f:
+                    return info["name"], f.read()
+            except OSError as e:
+                print(f"[SparklinePipe] could not read {path}: {e}")
+
+        content = info.get("content")
+        if content:
+            # Sent as .txt because it is already plain text; keeping the
+            # original extension would send a .xlsx that is not one.
+            return f"{info['name']}.txt", content.encode("utf-8")
+        return None
 
     @staticmethod
     def _detect_task(body: dict, query: str) -> Optional[str]:

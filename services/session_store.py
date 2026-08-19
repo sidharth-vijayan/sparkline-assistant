@@ -50,6 +50,10 @@ class SessionDocument:
     document_name: str
     uploaded_at: datetime
     chunk_count: int
+    # The Open WebUI file this came from, when the pipe uploaded it. None for a
+    # direct API upload. Lets the pipe tell which of a chat's files we already
+    # hold, since Open WebUI re-sends the whole list on every message.
+    source_file_id: str | None = None
 
 
 class SessionDocumentStore:
@@ -121,6 +125,7 @@ class SessionDocumentStore:
         owner_user_id: str,
         document_name: str,
         uploaded_at: Optional[datetime] = None,
+        source_file_id: Optional[str] = None,
     ) -> str:
         """
         Store one uploaded document's chunks against a chat.
@@ -142,6 +147,7 @@ class SessionDocumentStore:
                 "chat_id": chat_id,
                 "owner_user_id": owner_user_id,
                 "document_name": document_name,
+                "source_file_id": source_file_id,
                 "text": chunk["text"],
                 "page_number": chunk.get("page_number"),
                 "chunk_index": chunk.get("chunk_index", 0),
@@ -288,6 +294,7 @@ class SessionDocumentStore:
                         "owner_user_id": payload.get("owner_user_id", ""),
                         "document_name": payload.get("document_name", ""),
                         "uploaded_at_ts": float(payload.get("uploaded_at_ts") or 0.0),
+                        "source_file_id": payload.get("source_file_id"),
                         "chunk_count": 0,
                     },
                 )
@@ -306,12 +313,29 @@ class SessionDocumentStore:
                         e["uploaded_at_ts"], tz=timezone.utc
                     ),
                     chunk_count=e["chunk_count"],
+                    source_file_id=e["source_file_id"],
                 )
                 for doc_id, e in docs.items()
             ),
             key=lambda d: d.uploaded_at,
             reverse=True,
         )
+
+    def attached_source_file_ids(self, chat_id: str) -> set[str]:
+        """
+        Which Open WebUI files this chat already holds attachments for.
+
+        Open WebUI hands a pipe the chat's whole file list on every message,
+        not just the turn a file was attached, so without this the pipe would
+        re-embed the same document on each turn.
+        """
+        if not chat_id:
+            return set()
+        return {
+            d.source_file_id
+            for d in self.list_documents(chat_id=chat_id)
+            if d.source_file_id
+        }
 
     def delete_document(self, session_document_id: str) -> int:
         """

@@ -57,7 +57,8 @@ def store(_store):
     _store.delete_by_chat_ids([h.chat_id for h in _store.held_chats()])
 
 
-def add(store, chat_id, user_id, n=2, uploaded_at=None, name="notes.docx"):
+def add(store, chat_id, user_id, n=2, uploaded_at=None, name="notes.docx",
+        source_file_id=None):
     uploaded_at = uploaded_at or datetime.now(timezone.utc)
     chunks = [
         {"chunk_id": f"{chat_id}-{user_id}-{i}",
@@ -70,6 +71,7 @@ def add(store, chat_id, user_id, n=2, uploaded_at=None, name="notes.docx"):
     return store.upsert_chunks(
         chunks=chunks, chat_id=chat_id, owner_user_id=user_id,
         document_name=name, uploaded_at=uploaded_at,
+        source_file_id=source_file_id,
     )
 
 
@@ -248,3 +250,41 @@ def test_deleting_an_unknown_document_removes_nothing(store):
 
     assert freed == 0
     assert len(store.list_documents()) == 1
+
+
+# ── Source file tracking, so the pipe can avoid re-uploading ──────────────
+
+def test_records_the_source_file_id_it_was_uploaded_from(store):
+    """Open WebUI hands the pipe its file list on every message in a chat, not
+    just the turn the file was attached. Without a record of which of its files
+    we already hold, the pipe would re-upload on every single message."""
+    add(store, "chat-1", "user-A", n=2, source_file_id="owui-file-abc")
+
+    doc = store.list_documents()[0]
+
+    assert doc.source_file_id == "owui-file-abc"
+
+
+def test_source_file_id_is_optional(store):
+    """A direct API upload has no Open WebUI file behind it."""
+    add(store, "chat-1", "user-A", n=1)
+
+    assert store.list_documents()[0].source_file_id is None
+
+
+def test_reports_which_source_files_a_chat_already_holds(store):
+    add(store, "chat-1", "user-A", n=1, source_file_id="f1", name="one.txt")
+    add(store, "chat-1", "user-A", n=1, source_file_id="f2", name="two.txt")
+    add(store, "chat-2", "user-A", n=1, source_file_id="f3", name="other.txt")
+
+    assert store.attached_source_file_ids("chat-1") == {"f1", "f2"}
+
+
+def test_a_chat_holding_nothing_reports_no_source_files(store):
+    assert store.attached_source_file_ids("chat-empty") == set()
+
+
+def test_source_files_from_other_chats_are_not_reported(store):
+    add(store, "chat-other", "user-A", n=1, source_file_id="elsewhere")
+
+    assert store.attached_source_file_ids("chat-1") == set()

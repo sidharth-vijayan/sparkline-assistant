@@ -27,12 +27,13 @@ class FakeStore:
         self.calls = []
 
     def upsert_chunks(self, chunks, chat_id, owner_user_id, document_name,
-                      uploaded_at=None):
+                      uploaded_at=None, source_file_id=None):
         self.calls.append({
             "chunks": chunks,
             "chat_id": chat_id,
             "owner_user_id": owner_user_id,
             "document_name": document_name,
+            "source_file_id": source_file_id,
         })
         return "session-doc-id-1"
 
@@ -178,3 +179,19 @@ def test_a_small_file_is_not_reported_as_truncated():
     result, _ = ingest()
 
     assert result.truncated is False
+
+
+def test_the_source_file_id_reaches_the_store():
+    """So the pipe can tell later which of a chat's files we already hold."""
+    store = FakeStore()
+    ingest_session_document(
+        file_bytes=b"Some readable text about widgets.",
+        filename="notes.txt",
+        chat_id="chat-1",
+        owner_user_id="user-A",
+        store=store,
+        embed=fake_embed,
+        source_file_id="owui-file-xyz",
+    )
+
+    assert store.calls[0]["source_file_id"] == "owui-file-xyz"

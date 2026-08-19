@@ -65,6 +65,7 @@ class AttachmentStore(Protocol):
         owner_user_id: str,
         document_name: str,
         uploaded_at: Optional[datetime] = None,
+        source_file_id: Optional[str] = None,
     ) -> str: ...
 
 
@@ -86,6 +87,7 @@ def ingest_session_document(
     owner_user_id: str,
     store: Optional[AttachmentStore] = None,
     embed: Optional[Callable[[list[str]], list[list[float]]]] = None,
+    source_file_id: Optional[str] = None,
 ) -> IngestedAttachment:
     """
     Parse, chunk, embed and store one chat attachment.
@@ -165,6 +167,7 @@ def ingest_session_document(
         owner_user_id=owner_user_id,
         document_name=filename,
         uploaded_at=datetime.now(timezone.utc),
+        source_file_id=source_file_id,
     )
 
     logger.info(

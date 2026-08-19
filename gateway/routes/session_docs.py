@@ -60,6 +60,7 @@ def _as_dict(doc) -> dict:
         "document_name": doc.document_name,
         "uploaded_at": doc.uploaded_at.isoformat(),
         "chunk_count": doc.chunk_count,
+        "source_file_id": doc.source_file_id,
     }
 
 
@@ -69,6 +70,10 @@ def _as_dict(doc) -> dict:
 async def attach_document(
     file: UploadFile = File(...),
     chat_id: str = Form(..., description="Open WebUI chat ID this belongs to"),
+    source_file_id: Optional[str] = Form(
+        None,
+        description="Open WebUI file ID, so the pipe can avoid re-uploading it",
+    ),
     current_user: User = Depends(get_current_user),
 ) -> dict:
     """Attach a file to one chat. Retrievable only in that chat, by you."""
@@ -94,6 +99,7 @@ async def attach_document(
             chat_id=chat_id.strip(),
             owner_user_id=str(current_user.id),
             store=_store(),
+            source_file_id=source_file_id,
         )
     except UnsupportedSessionFile as e:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(e)) from e
@@ -128,6 +134,27 @@ async def list_my_documents(
         owner_user_id=str(current_user.id), chat_id=chat_id
     )
     return {"documents": [_as_dict(d) for d in docs], "count": len(docs)}
+
+
+@router.get("/session/documents/source-files")
+async def my_source_files(
+    chat_id: str,
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Which Open WebUI files this chat already holds, for the pipe's dedupe.
+
+    Scoped to the caller, so it cannot be used to discover what somebody else
+    attached to a chat.
+    """
+    mine = {
+        d.source_file_id
+        for d in _store().list_documents(
+            owner_user_id=str(current_user.id), chat_id=chat_id
+        )
+        if d.source_file_id
+    }
+    return {"chat_id": chat_id, "source_file_ids": sorted(mine)}
 
 
 @router.delete("/session/documents/{session_document_id}")
