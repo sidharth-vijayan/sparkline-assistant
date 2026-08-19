@@ -96,3 +96,49 @@ def build_qdrant_filter(pdp_result: PDPResult) -> qmodels.Filter | None:
             min_count=1,
         ),
     )
+
+
+def build_session_filter(chat_id: str, user_id: str) -> qmodels.Filter:
+    """
+    Build the retrieval filter for one chat's session attachments.
+
+    This is deliberately a separate function from build_qdrant_filter() rather
+    than a branch inside it. Session attachments live in their own Qdrant
+    collection, so the corpus filter never has to know they exist, and no
+    change here can widen what the corpus path returns.
+
+    Both conditions are `must`. The chat ID alone would be enough to scope
+    retrieval, but the owner check means a leaked or guessed chat ID still
+    cannot surface another user's upload.
+
+    Args:
+        chat_id: The Open WebUI chat the attachment belongs to.
+        user_id: The Sparkline user who uploaded it.
+
+    Returns:
+        A Qdrant Filter matching only this user's attachments in this chat.
+
+    Raises:
+        ValueError: If either identifier is missing. An unscoped session filter
+            would match every attachment in the store, so building one by
+            accident is made impossible rather than merely discouraged.
+    """
+    if not chat_id:
+        raise ValueError("chat_id is required — an unscoped session filter would "
+                         "match every attachment in the store")
+    if not user_id:
+        raise ValueError("user_id is required — an unscoped session filter would "
+                         "match every user's attachments")
+
+    return qmodels.Filter(
+        must=[
+            qmodels.FieldCondition(
+                key="chat_id",
+                match=qmodels.MatchValue(value=chat_id),
+            ),
+            qmodels.FieldCondition(
+                key="owner_user_id",
+                match=qmodels.MatchValue(value=user_id),
+            ),
+        ]
+    )
