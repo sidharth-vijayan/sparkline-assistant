@@ -36,6 +36,21 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      # Open WebUI's own database, read-only, so the reconciliation sweep can
+      # see which chats still exist. Attachments have no expiry, so this is the
+      # only thing that ever reclaims them: the sweep compares live chats
+      # against the attachments held and deletes the difference.
+      #
+      # Read-only is not a formality — this is the frontend's live database and
+      # nothing here has any business writing to it. Without this mount the
+      # sweep aborts rather than deleting, which is the correct direction to
+      # fail but means nothing is ever reclaimed.
+      #
+      # Compose merges volumes by container path, so the base file's `.:/app`
+      # bind mount survives this. Verify with `docker compose config` after
+      # editing: losing /app would leave the container with no source code.
+      - open_webui_data:/webui-data:ro
   open-webui:
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
