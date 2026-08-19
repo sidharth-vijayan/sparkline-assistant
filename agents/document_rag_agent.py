@@ -32,6 +32,7 @@ from access_control.pep import build_qdrant_filter
 from agents.tool_executor import ToolExecutor
 from config.settings import get_settings
 from db.models import User
+from retrieval.session_merge import merge_session_candidates
 from retrieval.citation_builder import Citation, build_citations, build_context_block
 from retrieval.hybrid_retrieval import hybrid_search
 from retrieval.query_normalizer import correct_typos
@@ -143,6 +144,7 @@ class DocumentRAGAgent:
         intent: QueryIntent,
         db: AsyncSession,
         retrieval_query: str | None = None,
+        session_ctx=None,
     ) -> RetrievalResult:
         """
         Run the access-controlled retrieval half of the pipeline.
@@ -200,7 +202,7 @@ class DocumentRAGAgent:
         effective_query = prompt_normalized.text if prompt_normalized.changed else None
 
         # ── Steps 4-5: Hybrid retrieval + reranking ───────────────
-        reranked = self._retrieve_and_rerank(normalized.text, qdrant_filter)
+        reranked = self._retrieve_and_rerank(normalized.text, qdrant_filter, session_ctx)
         top_score = self._top_score(reranked)
         log.info(
             "rag_agent.reranked", final_count=len(reranked), top_score=top_score
@@ -215,7 +217,7 @@ class DocumentRAGAgent:
         if normalized.changed and (
             top_score is None or top_score < settings.router_rag_score_low
         ):
-            original = self._retrieve_and_rerank(search_text, qdrant_filter)
+            original = self._retrieve_and_rerank(search_text, qdrant_filter, session_ctx)
             original_score = self._top_score(original)
             if original_score is not None and (
                 top_score is None or original_score > top_score
@@ -234,7 +236,7 @@ class DocumentRAGAgent:
         if self._should_rewrite(normalized, top_score):
             rewritten = await self._semantic_rewrite(search_text, log)
             if rewritten:
-                candidate = self._retrieve_and_rerank(rewritten, qdrant_filter)
+                candidate = self._retrieve_and_rerank(rewritten, qdrant_filter, session_ctx)
                 candidate_score = self._top_score(candidate)
                 if candidate_score is not None and (
                     top_score is None or candidate_score > top_score
@@ -277,9 +279,22 @@ class DocumentRAGAgent:
     # ── Retrieval helpers ────────────────────────────────────────────
 
     @staticmethod
-    def _retrieve_and_rerank(search_text: str, qdrant_filter) -> list[dict]:
-        """One retrieval pass: hybrid search then cross-encoder rerank."""
+    def _retrieve_and_rerank(
+        search_text: str, qdrant_filter, session_ctx=None
+    ) -> list[dict]:
+        """
+        One retrieval pass: hybrid search, optionally merged with this chat's
+        attachments, then cross-encoder rerank.
+
+        The two searches hit different collections under different filters. The
+        reranker scores the union, so an attachment wins on relevance rather
+        than on being an attachment.
+        """
         raw_chunks = hybrid_search(query=search_text, qdrant_filter=qdrant_filter)
+        if session_ctx is not None:
+            raw_chunks = merge_session_candidates(
+                raw_chunks, session_ctx.search(search_text)
+            )
         if not raw_chunks:
             return []
         return rerank(query=search_text, candidates=raw_chunks)

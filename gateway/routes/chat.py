@@ -40,6 +40,9 @@ class ChatRequest(BaseModel):
     model: Optional[str] = None   # Accepted but ignored — model is config-driven
     messages: list[ChatMessage]
     session_id: Optional[str] = None
+    # Open WebUI's chat ID. Scopes per-chat attachments; absent for API callers
+    # that are not a chat, in which case no attachment is ever in scope.
+    chat_id: Optional[str] = None
     stream: Optional[bool] = False
 
 
@@ -98,6 +101,7 @@ async def chat_completions(
             user_id=str(current_user.id),
             session_id=session_id,
             db=db,
+            chat_id=request.chat_id,
         )
 
     # Write audit log (non-blocking — failure won't crash the request)

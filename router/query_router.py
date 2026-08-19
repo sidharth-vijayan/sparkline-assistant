@@ -49,6 +49,7 @@ from access_control.intent_classifier import QueryIntent, classify_intent
 from agents.document_rag_agent import DocumentRAGAgent
 from agents.general_llm_agent import GeneralLLMAgent
 from config.settings import get_settings
+from retrieval.session_merge import SessionContext, has_session_evidence
 from router.route_decision import Route, build_retrieval_query, is_refusal, pre_route
 from services.redis_service import (
     append_message,
@@ -87,6 +88,7 @@ class QueryRouter:
         user_id: str,
         session_id: str,
         db,
+        chat_id: str | None = None,
     ) -> dict:
         """
         Classify the query and dispatch to the appropriate agent.
@@ -150,12 +152,20 @@ class QueryRouter:
             if retrieval_query != query:
                 log.info("router.followup_condensed", retrieval_query=retrieval_query)
 
+        # Attachments for this chat, if any. Built unconditionally when a chat
+        # ID is known — the lookup is cheap and returns nothing for the common
+        # case of a chat with no attachments.
+        session_ctx = (
+            SessionContext(chat_id=chat_id, user_id=user_id) if chat_id else None
+        )
+
         retrieval = await self._rag_agent.retrieve(
             query=query,
             user_id=user_id,
             intent=gate_intent,
             db=db,
             retrieval_query=retrieval_query,
+            session_ctx=session_ctx,
         )
 
         if retrieval.error:
@@ -202,6 +212,20 @@ class QueryRouter:
             )
             await set_last_document_query(session_id, query, explicit.get("answer", ""))
             return explicit
+
+        # A file the user attached to this chat is in the results. Attaching a
+        # file is as explicit a document request as naming one, so the score
+        # floor does not apply — otherwise "summarise this", which retrieves
+        # poorly by construction, would be answered from general knowledge and
+        # look like the attachment had been ignored.
+        if has_session_evidence(retrieval.chunks):
+            log.info("router.dispatch.document_rag", reason="session_attachment")
+            attached = await self._rag_agent.answer(
+                query=query, session_id=session_id, intent=gate_intent,
+                retrieval=retrieval,
+            )
+            await set_last_document_query(session_id, query, attached.get("answer", ""))
+            return attached
 
         if score < settings.router_rag_score_low:
             log.info("router.dispatch.general_llm", reason="below_score_floor")

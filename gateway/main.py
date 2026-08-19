@@ -115,10 +115,12 @@ def create_app() -> FastAPI:
     from gateway.routes.chat import router as chat_router
     from gateway.routes.ingest import router as ingest_router
     from gateway.routes.admin import router as admin_router
+    from gateway.routes.session_docs import router as session_docs_router
 
     app.include_router(chat_router)
     app.include_router(ingest_router)
     app.include_router(admin_router)
+    app.include_router(session_docs_router)
 
     # ── Health check ──────────────────────────────────────────────
     @app.get("/health")
