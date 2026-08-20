@@ -76,6 +76,21 @@ building" decision is outstanding.
 
 ---
 
+## 4. Manual system-switch dropdown in Open WebUI (pilot only)
+
+For this pilot version, add a dropdown in Open WebUI letting testers manually pick which backend
+they're talking to — the generic LLM/RAG system (this project) or Dhruv's ERP/HRMS system —
+instead of one assistant routing automatically. Later, once both systems are live, this gets
+replaced by semantic routing that infers which system a request belongs to from the request
+itself, with no manual switch.
+
+**Why deferred:** Dependency limitation. Dhruv's side isn't implemented yet — the enterprise
+agent interface (`agents/enterprise_agent_interface.py`, CLAUDE.md pending item 8) is still an
+abstract contract with no implementation, gated on him. The dropdown itself is a small Open WebUI
+config/UI change; it can't be built before there's a second real backend for it to switch to.
+
+---
+
 ## Related, already-known gaps this scope depends on
 
 - **File export delivery** (CLAUDE.md pending item 4/7) — the MinIO persistence + download
