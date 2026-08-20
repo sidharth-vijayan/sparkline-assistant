@@ -210,6 +210,22 @@ class IngestionPipeline:
         """Dispatch to the appropriate parser + chunker based on file type."""
         return parse_and_chunk(file_bytes, filename, suffix)
 
+    async def _find_existing_document(self, filename: str) -> Optional[Document]:
+        """
+        Look up an existing document by original filename.
+
+        Was stranded inside parse_and_chunk() when that function was extracted
+        to module level: the body moved out of the class and took this method
+        with it, where its four-space indent made it a nested function that
+        nothing could call. ingest() calls self._find_existing_document() on
+        every upload, so document ingestion raised AttributeError for any file
+        at all. Nothing caught it because no test exercises ingest() end to end.
+        """
+        result = await self.db.execute(
+            select(Document).where(Document.original_filename == filename).limit(1)
+        )
+        return result.scalar_one_or_none()
+
 
 def parse_and_chunk(
     file_bytes: bytes, filename: str, suffix: str
@@ -257,13 +273,6 @@ def parse_and_chunk(
             f"Unsupported file type: '{suffix}'. "
             "Supported: .pdf, .docx, .doc, .xlsx, .xlsm, .xls, .csv, .txt, .md"
         )
-
-    async def _find_existing_document(self, filename: str) -> Optional[Document]:
-        """Look up an existing document by original filename."""
-        result = await self.db.execute(
-            select(Document).where(Document.original_filename == filename).limit(1)
-        )
-        return result.scalar_one_or_none()
 
 
 def _cap_chunks(
