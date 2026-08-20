@@ -3,10 +3,14 @@ services/minio_service.py
 ──────────────────────────
 MinIO client wrapper for raw document file storage.
 
-Non-destructive versioning: files are NEVER deleted from MinIO.
-When a new version of a document is uploaded, the old object key
-stays in MinIO permanently for audit/history. The active version
-is tracked in PostgreSQL (document_versions.is_active).
+Retention: while a document is live, superseded versions stay in MinIO, so
+version history is intact and the active version is tracked in PostgreSQL
+(document_versions.is_active).
+
+Withdrawing a document is different — it purges every object belonging to it.
+See delete_objects(). Retaining the original of a file someone asked us to
+remove is exactly the outcome that policy is meant to prevent, so "withdrawn"
+means gone from the server's disk, not merely absent from the index.
 
 Object key format:
   documents/{document_id}/{version_id}/{original_filename}
@@ -54,8 +58,8 @@ def upload_document(
     """
     Upload a document file to MinIO.
 
-    Returns the object key (permanent, never deleted).
-    Old versions remain under their own version_id prefix.
+    Returns the object key. Old versions remain under their own version_id
+    prefix and survive until the whole document is withdrawn.
     """
     client = _get_client()
     bucket = settings.minio_bucket_documents
@@ -122,6 +126,51 @@ def get_presigned_url(object_key: str, expires_seconds: int = 3600) -> str:
         expires=timedelta(seconds=expires_seconds),
     )
     return url
+
+
+def delete_objects(object_keys: list[str]) -> int:
+    """
+    Permanently remove objects from MinIO. Used when a document is withdrawn.
+
+    Returns the number of objects confirmed gone.
+
+    A key that is already absent counts as success: the caller's goal is that
+    the file no longer exists, and a missing object satisfies that. Treating it
+    as an error would leave a half-withdrawn document that can never be fully
+    withdrawn, because the retry fails on the object the first attempt removed.
+
+    Deletion is per-key rather than via remove_objects() so that one bad key
+    cannot abort the batch and leave later files on disk. That matters more
+    here than speed: a document is a handful of objects, and the failure this
+    guards against is precisely the one that would silently retain a file.
+    """
+    if not object_keys:
+        return 0
+
+    client = _get_client()
+    bucket = settings.minio_bucket_documents
+    removed = 0
+    failed: list[str] = []
+
+    for key in object_keys:
+        try:
+            client.remove_object(bucket_name=bucket, object_name=key)
+            removed += 1
+        except S3Error as e:
+            if getattr(e, "code", "") in ("NoSuchKey", "NoSuchBucket"):
+                removed += 1
+                continue
+            logger.error("minio.delete_failed", object_key=key, error=str(e))
+            failed.append(key)
+
+    if failed:
+        raise RuntimeError(
+            f"could not delete {len(failed)} of {len(object_keys)} objects from "
+            f"MinIO: {failed[:5]}"
+        )
+
+    logger.info("minio.objects_deleted", count=removed)
+    return removed
 
 
 def stat_object(object_key: str) -> Optional[dict]:
