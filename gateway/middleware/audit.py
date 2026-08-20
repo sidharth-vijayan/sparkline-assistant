@@ -31,7 +31,6 @@ async def log_query(
     session_id: Optional[str] = None,
     pdp_decision: Optional[str] = None,
     retrieved_doc_version_ids: Optional[list[str]] = None,
-    response_summary: Optional[str] = None,
     latency_ms: Optional[int] = None,
 ) -> None:
     """
@@ -45,8 +44,11 @@ async def log_query(
         session_id: Redis session ID
         pdp_decision: 'allow' | 'deny' | None
         retrieved_doc_version_ids: List of document version UUIDs that were retrieved
-        response_summary: First 500 chars of the response
         latency_ms: Total request latency in milliseconds
+
+    The answer itself is not recorded. See the note on AuditLog in db/models.py:
+    storing a slice of the response duplicated document text into a table with
+    no access control over it, and nothing read it back.
     """
     try:
         entry = AuditLog(
@@ -57,7 +59,6 @@ async def log_query(
             session_id=session_id,
             pdp_decision=pdp_decision,
             retrieved_doc_version_ids=retrieved_doc_version_ids or [],
-            response_summary=(response_summary or "")[:500],
             latency_ms=latency_ms,
             created_at=datetime.now(timezone.utc),
         )

@@ -117,7 +117,6 @@ async def chat_completions(
         session_id=session_id,
         pdp_decision=agent_response.get("pdp_decision"),
         retrieved_doc_version_ids=retrieved_ids,
-        response_summary=agent_response.get("answer", "")[:500],
         latency_ms=timer.elapsed_ms,
     )
 

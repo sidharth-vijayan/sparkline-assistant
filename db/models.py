@@ -235,9 +235,16 @@ class AuditLog(Base):
         ARRAY(String), nullable=True
     )
 
-    response_summary: Mapped[Optional[str]] = mapped_column(
-        Text, nullable=True
-    )  # First 500 chars of the response
+    # There is deliberately no copy of the answer here. The log stored the
+    # first 500 characters of every response, which for a document answer is
+    # verbatim document text — a second, unfiltered copy of confidential content
+    # in a table that no access rule protects. It was never returned by
+    # GET /admin/audit-log either, so it served no purpose that justified it.
+    #
+    # What attribution needs is who asked what, when, which agent answered and
+    # which document versions were retrieved. All of that is still here, and
+    # retrieved_doc_version_ids identifies the source documents without
+    # reproducing their contents.
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
