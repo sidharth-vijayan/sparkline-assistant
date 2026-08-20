@@ -4,6 +4,23 @@
 # Usage:
 #   CPU-only:  docker compose up -d
 #   With GPU:  docker compose --profile gpu up -d
+#
+# ── Port binding: only the two front doors face the network ──────────────────
+# Every datastore below binds to 127.0.0.1. They previously bound 0.0.0.0, which
+# published them to the whole office LAN, and on 2026-08-19 a laptop on that LAN
+# read document text straight out of Qdrant with no credentials. Access control
+# is enforced by the application when it queries, so anything reaching a
+# datastore directly is past the enforcement point and sees everything — which
+# would make ABAC decorative the moment it is switched on.
+#
+# `api` and `open-webui` stay on 0.0.0.0 deliberately: they ARE the product, they
+# authenticate, and the office is supposed to reach them.
+#
+# 127.0.0.1 rather than removing the ports entirely, because an SSH tunnel
+# terminates on the server's loopback — so `ssh -L 16333:localhost:16333` keeps
+# working for admin access and for integration tests, while nothing on the LAN
+# can connect. Containers reach each other by service name over the compose
+# network and never use these host ports at all.
 
 services:
   # ─────────────────────────────────────────────
@@ -15,10 +32,13 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sparkline}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sparkline_secret}
+      # No default. A fallback here is a password published in git that works,
+      # which is how the server ended up running on the placeholder from
+      # .env.example. Unset now stops the stack with a message instead.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-sparkline_db}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -34,13 +54,13 @@ services:
     image: redis:7-alpine
     container_name: sparkline_redis
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD:-redis_secret}
+    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secret}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -54,11 +74,11 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_secret}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
     ports:
-      - "${MINIO_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
     healthcheck:
@@ -75,13 +95,19 @@ services:
     container_name: sparkline_qdrant
     restart: unless-stopped
     ports:
-      - "${QDRANT_PORT:-6333}:6333"
-      - "${QDRANT_GRPC_PORT:-6334}:6334"
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
       QDRANT__SERVICE__HTTP_PORT: 6333
       QDRANT__SERVICE__GRPC_PORT: 6334
+      # Qdrant ships with no authentication whatsoever — this is opt-in, not a
+      # setting that was misconfigured. Defence in depth behind the loopback
+      # bind above: if a future edit republishes the port, the data does not
+      # become readable by anyone who can reach it. Must match QDRANT_API_KEY in
+      # .env, which is what the application client sends.
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
     healthcheck:
       test: ["CMD-SHELL", "bash -c '(echo >/dev/tcp/localhost/6333) 2>/dev/null && exit 0 || exit 1'"]
       interval: 15s
@@ -96,7 +122,7 @@ services:
     container_name: sparkline_ollama
     restart: unless-stopped
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -116,7 +142,7 @@ services:
     profiles: ["gpu"]
     restart: unless-stopped
     ports:
-      - "${OLLAMA_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
     deploy:
