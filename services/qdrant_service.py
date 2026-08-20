@@ -43,6 +43,14 @@ def _get_client() -> QdrantClient:
             "port": settings.qdrant_port,
             "grpc_port": settings.qdrant_grpc_port,
             "prefer_grpc": True,
+            # Explicit, and not merely a default being restated: qdrant-client
+            # turns TLS ON BY ITSELF as soon as an api_key is supplied, on the
+            # assumption that a key implies Qdrant Cloud. Ours is plaintext on
+            # the docker network, so without this the client opens a TLS
+            # handshake against an HTTP port and every call fails with
+            # WRONG_VERSION_NUMBER — which reads like a certificate problem
+            # rather than the client having quietly changed scheme.
+            "https": False,
         }
         if settings.qdrant_api_key:
             kwargs["api_key"] = settings.qdrant_api_key
@@ -188,6 +196,56 @@ def deactivate_version(document_version_id: uuid.UUID) -> None:
     logger.info(
         "qdrant.version_deactivated",
         version_id=str(document_version_id),
+    )
+
+
+def set_document_access(
+    document_id: uuid.UUID,
+    allowed_departments: Optional[list[str]],
+    allowed_designations: Optional[list[str]],
+    is_public: bool,
+) -> None:
+    """
+    Rewrite the access-control payload on every chunk of one document.
+
+    Retrieval filters on the Qdrant payload, not on PostgreSQL, so changing a
+    document's permissions in the database alone changes nothing about who can
+    retrieve it. This is the half that actually takes effect.
+
+    All three fields are written together, including unchanged ones. A partial
+    payload update would leave the two stores disagreeing about a document's
+    audience, and the store that decides what users see is this one.
+
+    Applies to every version, superseded ones included: an old version that is
+    currently filtered out by is_active_version would otherwise keep the old
+    audience and become visible under it if it were ever reactivated.
+    """
+    client = _get_client()
+
+    client.set_payload(
+        collection_name=settings.qdrant_collection_name,
+        payload={
+            "allowed_departments": allowed_departments or [],
+            "allowed_designations": allowed_designations or [],
+            "is_public": is_public,
+        },
+        points=qmodels.Filter(
+            must=[
+                qmodels.FieldCondition(
+                    key="document_id",
+                    match=qmodels.MatchValue(value=str(document_id)),
+                )
+            ]
+        ),
+        wait=True,
+    )
+
+    logger.info(
+        "qdrant.document_access_updated",
+        document_id=str(document_id),
+        departments=allowed_departments,
+        designations=allowed_designations,
+        is_public=is_public,
     )
 
 

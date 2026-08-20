@@ -80,6 +80,10 @@ class SessionDocumentStore:
             host=settings.qdrant_host,
             port=settings.qdrant_port,
             api_key=settings.qdrant_api_key or None,
+            # Required whenever api_key is set: qdrant-client switches to TLS on
+            # its own when it sees a key, and this Qdrant serves plaintext. See
+            # the longer note in services/qdrant_service.py.
+            https=False,
             timeout=30,
         )
 
