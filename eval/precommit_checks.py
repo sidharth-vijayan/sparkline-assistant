@@ -344,7 +344,37 @@ async def check_audit(token: str) -> None:
         fail(f"no recognised agent_type in recent rows: {[a for _, a in rows]}")
 
 
+# ── 0. Routing band is usable at all ──────────────────────────────────
+def check_router_band() -> None:
+    """
+    Assert the rerank band can actually produce all three answer modes.
+
+    Mechanical, and deliberately first: every behavioural check below reads
+    agent_type, so a band that cannot emit document_rag_blended makes check 3
+    unexplainable rather than failing anything. This is also the one routing
+    defect that needs no live stack to detect, so it should never be found by
+    reading a transcript.
+    """
+    section("0. Routing band is not degenerate")
+
+    s = get_settings()
+    if s.router_mode != "evidence":
+        ok(f"router_mode is '{s.router_mode}' — band ordering does not apply")
+        return
+
+    if s.router_rag_score_high > s.router_rag_score_low:
+        ok(f"HIGH ({s.router_rag_score_high}) > LOW ({s.router_rag_score_low}) — "
+           f"blended band spans {s.router_rag_score_high - s.router_rag_score_low:.2f}")
+    else:
+        fail(f"HIGH ({s.router_rag_score_high}) <= LOW ({s.router_rag_score_low}): the "
+             f"blended band is unreachable, so no answer can mark which parts came "
+             f"from general knowledge. Re-measure with eval.calibrate_router and set "
+             f"HIGH strictly above LOW.")
+
+
 def main() -> None:
+    check_router_band()
+
     token = login()
 
     asyncio.run(check_history(token))
