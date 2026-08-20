@@ -13,18 +13,23 @@ scoped, just sequenced after something else.
 Extract embedded pictures from source documents at ingest time (docx `w:drawing`/`w:pict`, xlsx
 charts, pdf images — none of which are captured today, see "Images in source documents" below),
 store them in MinIO, add an `image_refs` field to the Qdrant chunk payload, and return the
-relevant image as a markdown download link when its neighbouring text chunk is retrieved. Reuses
-the same base64 → `tool_outputs` → markdown-link wiring pattern already half-built for
-`chart_tool.py` / `export_tool.py`.
+relevant image as a download link when its neighbouring text chunk is retrieved.
 
 This is **retrieval-blind** — the system never looks at what's *in* the image, it just serves the
 picture that sat next to the retrieved text.
 
-**Why deferred:** Time/dependency limitation, not a hardware one. The MinIO persistence layer and
-authenticated download endpoint this needs are the *same* missing pieces blocking file-export
-delivery (pending work item 7 — `tool_outputs`/`chart_base64` are produced but never persisted or
-served). Build that persistence layer once, for both. Doing image extraction before export
-delivery exists would mean building the same infrastructure twice.
+**Why deferred:** Time/priority limitation. Not blocked on infrastructure: the delivery half is
+already solved and can be copied rather than built. File export delivery landed 2026-08-19
+(`gateway/routes/exports.py` — MinIO persistence plus `GET /exports/{export_id}` with a
+single-file download token), so the storage-and-authenticated-link pattern this needs already
+exists and works. What remains is genuinely new: pulling pictures out at parse time in each
+parser (`docx_parser.py` never walks `w:drawing`/`w:pict`; `excel_parser.py` captures chart
+titles only), and adding an image field to the chunk payload, which has none today. Deferred
+because the pilot ships first, not because anything is in the way.
+
+> **Note:** CLAUDE.md still lists file-export delivery as an open defect (pending work item 7).
+> That entry is stale — it was closed on 2026-08-19. Worth correcting there so this reasoning
+> isn't re-derived wrongly later.
 
 ---
 
@@ -91,9 +96,17 @@ config/UI change; it can't be built before there's a second real backend for it 
 
 ---
 
-## Related, already-known gaps this scope depends on
+## Related, already-known gaps
 
-- **File export delivery** (CLAUDE.md pending item 4/7) — the MinIO persistence + download
-  endpoint that item 1 above reuses. Must land first.
-- **Per-chat session-scoped upload** (CLAUDE.md pending item 2) — separate access-control problem,
-  unrelated to admin-uploaded documents; not a prerequisite for anything above.
+- **File export delivery** — **already done** (2026-08-19). `gateway/routes/exports.py` stores
+  generated files in MinIO and serves them via `GET /exports/{export_id}` with a token scoped to
+  one file and one person. Item 1 above copies this pattern rather than waiting on it. CLAUDE.md's
+  pending-item list is stale on this point.
+- **Chart generation** — still unverified end to end (`tools/chart_tool.py`, and the
+  `tools/sandbox.py` subprocess path was never exercised). Shares the image-delivery question with
+  item 1, so worth checking at the same time.
+- **Per-chat session-scoped upload** — separate access-control problem, unrelated to
+  admin-uploaded documents; not a prerequisite for anything above.
+- **Admin UI download-back route** — the one backend piece item 3 needs.
+  `services/minio_service.download_document()` already exists and is currently called by nothing;
+  it needs a route, and `exports.py` shows the pattern for serving a file safely.
