@@ -9,10 +9,11 @@ Switching from Ollama (dev) to vLLM (prod), or migrating to new hardware,
 requires ONLY changes to the .env file — never application code changes.
 """
 
+import warnings
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import computed_field, field_validator
+from pydantic import computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -244,6 +245,130 @@ class Settings(BaseSettings):
         if len(v) < 32:
             raise ValueError("APP_SECRET_KEY must be at least 32 characters long")
         return v
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def router_band_is_degenerate(self) -> bool:
+        """
+        True when the rerank band cannot produce a blended answer.
+
+        router/query_router.py evaluates `blended = score < high` only after
+        `score >= low` has already passed, so a high that is not strictly
+        greater than low makes that condition unsatisfiable and the blended
+        band unreachable. Every query then resolves to documents-only or
+        general-only, and no answer marks which parts came from general
+        knowledge — a third of the routing behaviour disappears with nothing
+        raised anywhere.
+        """
+        return (
+            self.router_mode == "evidence"
+            and self.router_rag_score_high <= self.router_rag_score_low
+        )
+
+    @model_validator(mode="after")
+    def reject_published_credentials(self) -> "Settings":
+        """
+        Refuse to start on any credential that is published in the repository.
+
+        On 2026-08-19 the live server was found running PostgreSQL, Redis and
+        MinIO on the exact placeholder values printed in .env.example — a
+        git-tracked file — so anyone who could read the repo held the database
+        passwords. Nothing had gone wrong; the placeholders simply worked, so
+        nobody was ever prompted to change them.
+
+        This raises rather than warns. A weak password that the operator has
+        never seen a message about is indistinguishable from a strong one, and
+        unlike the router band there is no measurement to wait for: any random
+        value is a correct value, so there is no reason to allow the service to
+        run while the fix is pending.
+        """
+        published = {
+            "sparkline_secret",
+            "redis_secret",
+            "minio_secret",
+            "minioadmin",
+            "minio_admin",
+            "postgres",
+            "changeme",
+            "change_me",
+        }
+
+        offenders: list[str] = []
+        for env_name, value in (
+            ("POSTGRES_PASSWORD", self.postgres_password),
+            ("REDIS_PASSWORD", self.redis_password),
+            ("MINIO_ROOT_USER", self.minio_root_user),
+            ("MINIO_ROOT_PASSWORD", self.minio_root_password),
+        ):
+            candidate = (value or "").strip()
+            if not candidate:
+                offenders.append(f"{env_name} is empty")
+            elif candidate.lower() in published:
+                offenders.append(f"{env_name} is the placeholder from .env.example")
+            elif candidate.upper().startswith("CHANGE_ME"):
+                offenders.append(f"{env_name} is still the CHANGE_ME placeholder")
+
+        if offenders:
+            raise ValueError(
+                "Refusing to start on credentials that are published in the "
+                "repository: " + "; ".join(offenders) + ". Generate values with "
+                '`python -c "import secrets; print(secrets.token_urlsafe(24))"` '
+                "and set them in .env. Changing POSTGRES_PASSWORD also needs "
+                "ALTER ROLE inside an existing database — the variable is only "
+                "read when the database is first created."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def warn_on_missing_qdrant_api_key(self) -> "Settings":
+        """
+        Warn — not raise — when Qdrant has no API key.
+
+        Qdrant serves chunk text, including the payload fields the access filter
+        is built from, and it authenticates nothing unless this is set. That
+        earns a warning on every startup.
+
+        It stops short of raising because, unlike a password, blank is a
+        defensible setting: a Qdrant bound to loopback on a developer laptop is
+        not exposed by it, and refusing to boot there would push people toward
+        pasting a shared key into local .env files. On a shared host, set it.
+        """
+        if not self.qdrant_api_key.strip():
+            warnings.warn(
+                "QDRANT_API_KEY is empty: Qdrant will accept any request that "
+                "can reach it, and its payload contains full chunk text. Safe "
+                "only while the port is bound to loopback. Set a key on any "
+                "host other people can reach.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def warn_on_degenerate_router_band(self) -> "Settings":
+        """
+        Announce a degenerate band loudly instead of raising.
+
+        Raising would be defensible, but it would also refuse to start the
+        service until someone supplies numbers, and correct numbers come from
+        `python -m eval.calibrate_router` against the real corpus — inventing a
+        pair to get the process running is how the band became wrong in the
+        first place. So this warns at every startup and
+        eval/precommit_checks.py fails on it outright; what it must never do is
+        stay quiet.
+        """
+        if self.router_band_is_degenerate:
+            warnings.warn(
+                f"ROUTER_RAG_SCORE_HIGH ({self.router_rag_score_high}) is not "
+                f"greater than ROUTER_RAG_SCORE_LOW "
+                f"({self.router_rag_score_low}): blended answers are impossible "
+                f"and no answer will distinguish document content from general "
+                f"knowledge. Re-measure with `python -m eval.calibrate_router` "
+                f"and set HIGH strictly above LOW.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return self
 
 
 @lru_cache
