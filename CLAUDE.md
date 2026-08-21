@@ -506,6 +506,8 @@ without numeric data, ERP/HRMS questions, and today's response times under GPU c
 - Repoint or delete `qwen2.5-coder:14b` — the shared Dify depends on it.
 - Commit the `.bak` rollback files (`.env.bak-*`, `docker-compose.server.yml.bak-*`). They are
   intentionally untracked.
-- Edit the Pilot 1 column of `PILOT_1_BASELINE.md`. It is a frozen before/after measurement.
+- Edit the Pilot 1 column of `PILOT_VS_PERFORMANCE.md` (renamed from `PILOT_1_BASELINE.md` on
+  2026-08-21, since it spans every pilot rather than only the first). It is a frozen before/after
+  measurement. Later columns are meant to be filled; that one is not.
 - Commit from the server now that development has moved to the laptop — concurrent commits from
   both ends produce drift that will not fast-forward.
