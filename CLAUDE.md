@@ -225,6 +225,12 @@ Embedding runs on CUDA; the reranker is deliberately on CPU because VRAM is shar
 
 ---
 
+## Document deletion policy
+
+Deleted documents are destroyed immediately — no retention window, no grace period, no separate
+permanent-destroy step. Decided 2026-08-20 (manager). Deletion already removes the underlying
+file, not just the index entry.
+
 ## Pending work
 
 1. **Release to the six testers.** Blocked on the corpus: `demo_docs/` still holds only the two
@@ -234,10 +240,19 @@ Embedding runs on CUDA; the reranker is deliberately on CPU because VRAM is shar
    `access_control/pep.py:52-53` returns `must=[is_active_version]` for `full_access=True` users —
    which every pilot user is — so a session-uploaded document would be visible to **every** user.
    Needs session scoping in the Qdrant filter, a TTL for temporary chunks, and the pipe to forward
-   attachments (it currently reads only `body["messages"]`). Per-chat upload is switched off in
-   Open WebUI meanwhile. Build and test this **before** testers are live, never during.
-3. **Move upload/withdrawal into Open WebUI.** Endpoints exist: `POST /admin/ingest`,
-   `DELETE /admin/documents/{id}`, `GET /admin/documents`. The admin currently uses `:18000/docs`.
+   attachments (it currently reads only `body["messages"]`). Build and test this **before**
+   testers are live, never during.
+   **Contradiction, unresolved 2026-08-21.** This file says per-chat upload is switched off; the
+   internship tracking docs say it was enabled on 08-19 once isolation and the injection defences
+   were both demonstrated. `webui.db`'s `config` table has **no** file-upload key set, so it sits at
+   the Open WebUI default and neither record is confirmed. Check the paperclip in the UI before
+   testers arrive — it changes what the tester manual has to say.
+3. **Build a standalone admin front end — deliberately separate from Open WebUI**, per manager
+   direction (2026-08-19). It must talk only to the existing API (`POST /admin/ingest`,
+   `DELETE /admin/documents/{id}`, `GET /admin/documents`, plus user/audit-log endpoints), never
+   directly to the databases — a page hitting storage directly would recreate the network-exposure
+   hole closed on 2026-08-19. Needs: upload/delete, per-document access-control editing (already
+   built), and file download-back (not yet built). The admin currently uses raw `:18000/docs`.
 4. **Prompt injection — tested and fixed 2026-08-19.** `eval/adversarial_checks.py` runs six
    areas against the live stack; it now reports **18 passed, 0 failed** (from 11/4 before the fix).
    What was wrong and what closed it:
@@ -264,27 +279,181 @@ Embedding runs on CUDA; the reranker is deliberately on CPU because VRAM is shar
 5. RAGAS baseline (`eval/ragas_runner.py`) — must run *after* the routing change; figures measured
    under the old always-search behaviour are not valid.
 6. Real per-user access restrictions, gated on HR supplying department and designation data.
-7. **File export delivery.** Verified 2026-08-18, and the earlier "tool-calling repair" framing was
-   wrong: the model and the generators both work, the *delivery* path is missing. `qwen2.5:14b`
-   emits well-formed tool calls (3 of 4 probes; the miss was a prompt with no data, where asking
-   for it is correct), `tools/export_tool.py` produces valid `.docx`/`.xlsx` that reopen cleanly,
-   and `/v1/chat/completions` returns them base64-encoded in `tool_outputs`.
-   Then it stops. `_format_answer()` in `open_webui_pipeline/sparkline_pipeline.py` takes only
-   `(answer, citations, agent_type)` and never reads `tool_outputs`; no endpoint serves the bytes;
-   nothing is written to MinIO. The file is built, returned over the API, and discarded. The
-   executing DB copy of the pipe was checked too, not just the repo file — neither `tool_outputs`
-   nor `file_base64` appears in it.
-   This is worse than a missing download button, because the model reports success: a tester is
-   told "exported to a Word document ... successfully" and gets no file, no link, and no error.
-   Needs MinIO persistence, an authenticated download endpoint, and a markdown link from the pipe.
-   `tools/chart_tool.py` is **unverified** — the same delivery gap applies to `chart_base64`, and
-   the `tools/sandbox.py` subprocess path was never exercised.
-   Separate defect found in the same run: an export request with poor retrieval
+7. **File export delivery — DONE, verified end to end on the server 2026-08-21.** This entry
+   previously said delivery was missing; that was true on 08-18 and was closed on 08-19. It is
+   recorded here because the stale version already caused one wrong conclusion (that image
+   delivery would have to wait for this layer to be built).
+   What exists now: `gateway/routes/exports.py` persists the generated file to MinIO and serves it
+   at `GET /exports/{export_id}?token=...`, with `gateway/middleware/download_token.py` issuing a
+   token scoped to **one file and one person** — a browser can follow the link with no auth header.
+   Verified 08-21 as a real pilot user: the reply carried a `download_url`, an unauthenticated
+   fetch of it returned HTTP 200 and a valid 36 KB `.docx` (17 zip members).
+   Still open around it: `tools/chart_tool.py` is **unverified** end to end, and the
+   `tools/sandbox.py` subprocess path was never exercised. On 08-21 a chart request produced *no*
+   tool call because the corpus holds no numeric data — the model asked for data instead, which is
+   correct behaviour but reads to a tester as a refusal.
+   Also unresolved from the 08-18 run: an export request with poor retrieval
    ("download the project work split as a spreadsheet", rerank -7.98) produced no tool call *and*
    answered in Thai. On a weak export hit the model both skips the tool and drifts language.
 8. Enterprise ERP/HRMS routing — gated on Dhruv, deliberately not half-wired. The agreed contract
    and his answers are in `ENTERPRISE_ROUTING_CONTRACT.md`; `agents/enterprise_agent_interface.py`
    is an abstract contract with no implementation.
+
+---
+
+## Pilot day — state verified on the server, 2026-08-21 (morning)
+
+Everything below was **run on `SEPL-PC`**, not inferred from this checkout. Re-verify rather than
+trusting these numbers if more than a day has passed.
+
+    ssh sparkline            # ~/.ssh/config: HostName 192.168.200.21, User sepl, key sparkline_server
+    cd ~/proj1/sparkline-assistant
+
+| Check | Result |
+|---|---|
+| Containers | all 7 `sparkline_*` up; `/health` returns ok |
+| `python -m pytest -q` | **230 passed** (~8s) |
+| `python -m eval.precommit_checks` | **21 passed, 1 failed, 5 human reads** |
+| Accounts | 8 in Postgres *and* 8 in `webui.db`, emails match |
+| Model access grants | 7 per-user rows for the `sparkline` pipe |
+| Model gate | `qwen2.5:14b` and `qwen2.5-coder:14b` both `is_active=0`; only `sparkline` active |
+| Executing pipe | byte-identical to `open_webui_pipeline/sparkline_pipeline.py` |
+| Real pilot-user query | document answer w/ 5 citations; "tell me a joke" routed to general |
+| Export to download | HTTP 200, valid 36 KB `.docx`, no auth header needed |
+| Signup / web search | both disabled |
+
+The **one failing check is the known routing band** (`HIGH == LOW == -6.0`, see Routing above). It
+is meant to fail. Do not "fix" it by inventing numbers.
+
+### The corpus is still the blocker
+
+`documents` holds exactly **two rows, both dated 2026-08-07** (`project work split.docx`,
+`Sidharth_AI_Assistant_Design.docx`); Qdrant `sparkline_documents` = **186 points**,
+`sparkline_session_docs` = 0. Nothing of the testers' has been ingested. Everything else on the
+pilot path works — this is the only thing standing between the current state and a useful pilot,
+and it needs the files, not code. Recalibrate the routing band in the *same* pass (see Routing).
+
+### GPU contention is the practical risk today, not correctness
+
+Measured 2026-08-21 09:05 IST: card at **15404 / 16311 MiB**, three tenants —
+
+    1788619   6762 MiB   /usr/bin/python3           # Suyash's CV stack (host, outside Ollama)
+     717198   1506 MiB   /usr/local/bin/python3.11   # our embedding + reranker
+     923266   6976 MiB   /usr/local/bin/ollama       # our LLM
+
+`ollama ps` showed `qwen2.5:14b` at **31%/69% CPU/GPU** — it does *not* fit. Real end-to-end
+timings as a pilot user, same moment:
+
+    document question ("What is stored in MinIO?")   9.41 s   (tracking docs benchmark: ~1.4 s)
+    general question  ("Tell me a joke")             2.68 s   (benchmark: ~1.7 s)
+
+Six testers on that will report "it's broken" when it is contention. Coordinating with Suyash buys
+more on pilot day than any code change. Quote the benchmark numbers only alongside the contention,
+or they misrepresent what a tester will actually see.
+
+### Images in source documents are silently dropped
+
+Established 2026-08-21 by reading the parsers. An image embedded in a document is discarded at
+parse time in **every** supported format, with no error and no reference on the stored chunk:
+
+- `docx_parser.py` walks paragraphs, tables and textboxes; never `w:drawing` / `w:pict`.
+- `excel_parser.py` records a chart's **title** only (`_get_chart_title`), not the chart.
+- `pdf_parser.py` takes text only; a scanned page is OCR'd to text and the pixels are dropped.
+- The Qdrant chunk payload has **no field** capable of holding an image reference at all.
+
+So this is a data-model gap, not an unwired connection. A tester whose answer lives in a diagram
+gets the surrounding prose or nothing, and is never told anything was omitted. The pilot ships with
+this as a stated limitation. The two ways of closing it, and why each is deferred, are in
+`internship-tracking/FUTURE_SCOPE.md`.
+
+---
+
+## `internship-tracking/FUTURE_SCOPE.md` is the register of deferred work
+
+Created 2026-08-20. Four items, each with the reason it is not being built yet: image extraction
+and delivery, full multimodal (vision-model) retrieval, the standalone admin UI, and the pilot's
+manual system-switch dropdown. **Read it before re-planning any of those** — the reasons are the
+point, and re-deriving them from the code has already gone wrong once.
+
+### Admin UI — design settled 2026-08-20, deliberately not built
+
+Held on coordination with Dhruv, not on any technical question. Settled scope:
+
+- **Documents only** this pass — user admin and the audit log stay on the CLI / `:18000/docs`.
+- Login (`POST /auth/login`, JWT — already built, already used by `admin_tools/ingest_cli.py`),
+  list (`GET /admin/documents`), upload (`POST /admin/ingest`), access edit
+  (`PATCH /admin/documents/{id}`), delete (`DELETE /admin/documents/{id}`) — **all already exist**.
+- The **only** backend gap: an authenticated route to download an original file.
+  `services/minio_service.py:102 download_document()` exists and is called by nothing; copy the
+  token pattern from `gateway/routes/exports.py`.
+- Ingest is **synchronous** — parse+chunk+embed+index all in-request, no job-status endpoint.
+  Accepted at pilot scale: spinner and wait. Do not build a job queue for this.
+- A client of the API only, never touching storage directly — that constraint is what keeps the
+  2026-08-19 network exposure closed.
+- **Build it as a plain HTML + vanilla JS page served by FastAPI `StaticFiles`.** There is no
+  `node` or `npm` on the laptop (see below), the scope is six actions on one screen, and this
+  deploys by virtue of living in the repo the API already serves. Estimated ~1 focused day.
+  `gateway/main.py:45` already sets `allow_origins=["*"]` (its own comment says to restrict that in
+  production), so CORS will not bite during development.
+
+---
+
+## Facts the code does not tell you — environment
+
+### Server
+
+- Postgres is `POSTGRES_DB=sparkline_db`, user `sparkline`, host port **15432** (not a `sparkline`
+  database, not 5432). Use
+  `docker exec sparkline_postgres psql -U sparkline -d sparkline_db`.
+- `services/qdrant_service.py` exposes **module-level functions** (`_get_client()`, `upsert_chunks`,
+  `search_dense`, ...). There is no `get_qdrant_service()` — importing one fails.
+- Qdrant collections: `sparkline_documents`, `sparkline_session_docs`.
+
+### `webui.db` schema differs from what the three-step user procedure above describes
+
+That procedure is still right in intent, but this Open WebUI version stores grants differently, so
+verify against the real shape rather than the described API:
+
+- Model grants live in their own table: `access_grant(id, resource_type, resource_id,
+  principal_type, principal_id, permission, created_at)` — **not** an `access_control` column on
+  `model`. A per-user grant is `('model', 'sparkline', 'user', <user_id>, 'read')`.
+- `config` is **key/value** (`key`, `value`, `updated_at`), not one JSON `data` blob. Keys are
+  dotted, e.g. `ui.enable_signup`, `web.search.enable`, `rag.*`.
+- `model` columns: `id, user_id, base_model_id, name, params, meta, updated_at, created_at,
+  is_active`.
+
+### Laptop
+
+- **No `node`, no `npm`, no `gh`.** Only `git`. This is why the admin UI is planned as a no-build
+  static page, and why GitHub work goes through plain `git` over HTTPS (Git Credential Manager holds
+  the token) rather than the `gh` CLI.
+- A Poetry venv **does** exist at `.venv/` and has `python-docx`. Use `.venv/Scripts/python.exe` to
+  read or edit the `internship-tracking/*.docx` trackers. **Do not run `poetry install`** — it
+  destroys the torch runtime shim.
+- When editing those `.docx` files, clone an existing `List Paragraph` element and swap its text.
+  Setting the style name alone loses the bullet, because numbering lives in the paragraph's `pPr`,
+  not in the style. Set `PYTHONIOENCODING=utf-8`, or printing em-dashes to the console raises.
+
+### Repos — "my repo" vs "our repo"
+
+- **"my repo"** = `github.com/sidharth-vijayan/sparkline-assistant`. This checkout's `origin`.
+- **"our repo"** = `github.com/sidharth-vijayan/sparkline`, shared with Dhruv. **Not** a configured
+  remote here. Branches as of 2026-08-21: `main`, `dhruv/erp-adapter`, `dhruv/erp-wiring` — follow
+  that convention with `sidharth/<topic>`.
+- Write access to the shared repo is confirmed (via `git push --dry-run`). **Ask before pushing
+  there anyway** — Dhruv watches it, and a surprise branch is a conversation.
+- Its `main` **shares no history with this checkout** (`22dfaa40...` is not a local object). Settle
+  whether it holds a copy of this codebase or only the integration layer *before* pushing anything.
+
+---
+
+## Next task
+
+The **tester instruction manual**, written for people using a system like this for the first time:
+how to open the UI, send a message, upload a file if that turns out to be enabled (see the
+contradiction on pending item 2), and — as importantly — what the pilot cannot do yet, so an absent
+capability is not reported as a fault. Known limits to state plainly: images in documents, charts
+without numeric data, ERP/HRMS questions, and today's response times under GPU contention.
 
 ---
 
