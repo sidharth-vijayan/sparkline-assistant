@@ -242,11 +242,13 @@ file, not just the index entry.
    Needs session scoping in the Qdrant filter, a TTL for temporary chunks, and the pipe to forward
    attachments (it currently reads only `body["messages"]`). Build and test this **before**
    testers are live, never during.
-   **Contradiction, unresolved 2026-08-21.** This file says per-chat upload is switched off; the
-   internship tracking docs say it was enabled on 08-19 once isolation and the injection defences
-   were both demonstrated. `webui.db`'s `config` table has **no** file-upload key set, so it sits at
-   the Open WebUI default and neither record is confirmed. Check the paperclip in the UI before
-   testers arrive — it changes what the tester manual has to say.
+   **Contradiction RESOLVED 2026-08-21 — upload is OFF.** Checked in the live UI as a pilot user:
+   the `+` menu renders "Upload Files" / "Attach Files" as **greyed-out placeholders**, not usable
+   options. This file was right and the internship tracking docs were wrong. The pilot ships
+   without per-chat upload, stated as a limitation in the tester manual. Enabling it on release day
+   was rejected: it would put an isolation path that has never run in production in front of six
+   people at once, which is what "build and test this **before** testers are live" was written to
+   prevent.
 3. **Build a standalone admin front end — deliberately separate from Open WebUI**, per manager
    direction (2026-08-19). It must talk only to the existing API (`POST /admin/ingest`,
    `DELETE /admin/documents/{id}`, `GET /admin/documents`, plus user/audit-log endpoints), never
@@ -325,13 +327,53 @@ trusting these numbers if more than a day has passed.
 The **one failing check is the known routing band** (`HIGH == LOW == -6.0`, see Routing above). It
 is meant to fail. Do not "fix" it by inventing numbers.
 
-### The corpus is still the blocker
+**A second failure appeared after ingestion (2026-08-21 afternoon): 20 passed, 2 failed.** Check 4's
+mid-conversation turn `by the way what is 2 + 2` routed to `document_rag` at score **1.66** instead
+of general. It is not the gate failing generally — standalone general questions still route
+correctly, verified live in the UI (`tell me a joke`, `what is our leave policy`, `who is the CEO
+of Google` all answered from general knowledge with no citations). What leaks is a **topic switch
+mid-chat**: the query is contextualised against the previous document turn, so it retrieves as
+though still on that subject and clears the -6.0 floor easily. The answer was still correct and
+honestly labelled ("not directly provided in the source documents"), so this was accepted as a
+manual line — *start a new chat when you change topic* — rather than a release blocker. It is also
+the strongest argument for recalibrating: a general question scoring 1.66 means -6.0 has almost no
+margin against contextualised queries.
 
-`documents` holds exactly **two rows, both dated 2026-08-07** (`project work split.docx`,
-`Sidharth_AI_Assistant_Design.docx`); Qdrant `sparkline_documents` = **186 points**,
-`sparkline_session_docs` = 0. Nothing of the testers' has been ingested. Everything else on the
-pilot path works — this is the only thing standing between the current state and a useful pilot,
-and it needs the files, not code. Recalibrate the routing band in the *same* pass (see Routing).
+### The corpus blocker is CLEARED — 8 real documents ingested 2026-08-21
+
+The tester documents arrived as **8 crane and hoist product catalogues** (PDF) and were ingested
+as `file.admin` via `admin_tools/ingest_cli.py`, all `--public` and untagged (HR still has not
+supplied departments; label later with `set-access`). Qdrant `sparkline_documents` went
+**186 → 2857 points**; BM25 corpus = 2764 chunks. The ~93 gap is chunks with no indexable tokens.
+
+| Document | Pages | Chunks | chunks/page | needs_ocr |
+|---|---|---|---|---|
+| Wire rope hoists Product information_NEW.pdf | 216 | 899 | 4.2 | 3 |
+| End Carriages_2020-02-1.pdf | 144 | 520 | 3.6 | 3 |
+| Chain hoists Product information.pdf | 96 | 327 | 3.4 | 0 |
+| DEMAG.pdf | 180 | 361 | 2.0 | 0 |
+| eepos-Catalogue-2019.pdf | 156 | 294 | 1.9 | 4 |
+| handtakels-yale_0.pdf | 44 | 80 | 1.8 | 0 |
+| LR COMPONANT Manuals.pdf | 81 | 97 | 1.2 | 2 |
+| FHBR-011223-Finrae-catalog-update-2024.pdf | 104 | 93 | **0.9** | 4 |
+
+`needs_ocr` is 0–4 everywhere, so these are **native-text PDFs, not scans** — no Tesseract
+guesswork to distrust. **File size does not predict text volume**: `LR COMPONANT` is 37.8 MB and
+yielded 97 chunks, because the bulk of it is images sitting alongside the text.
+
+`FHBR-011223-Finrae` is the weak one — 0.9 chunks/page and `avg_tokens=199` against ~320–360
+elsewhere. Its pages are genuinely thin, so most of that catalogue's content is in graphics that
+the parsers drop. Expect poor answers on Finrae products specifically.
+
+**The image limitation, confirmed on real content.** Asked for a value off a graph, the assistant
+returned the *formulas and method for reading the diagram* — the surrounding prose — because it
+never saw the curve. Asked the same kind of question against a real **text** table (aluminium XL
+profile weights), it answered correctly and the numbers verified by hand. That contrast is the
+clearest available demonstration and belongs in the tester manual.
+
+**Recalibration is still outstanding** and is now the top job. See Routing: `IN_CORPUS` /
+`IN_CORPUS_TYPOD` in `eval/calibrate_router.py` still ask about the old design docs in their own
+vocabulary, so the calibration currently measures almost nothing about the real corpus.
 
 ### GPU contention is the practical risk today, not correctness
 
